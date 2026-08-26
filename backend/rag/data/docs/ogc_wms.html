@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>OGC WMS 服务简介</title></head>
+<body>
+<h1>OGC WMS 服务简介</h1>
+<p>WMS（Web Map Service）是 OGC 定义的地图服务标准，服务端按请求动态渲染并返回指定范围的地图图片。</p>
+<h2>核心请求参数</h2>
+<ul>
+<li><strong>REQUEST</strong>：操作类型，如 GetMap、GetCapabilities</li>
+<li><strong>LAYERS</strong>：要渲染的图层</li>
+<li><strong>BBOX</strong>：请求范围（最小经度、最小纬度、最大经度、最大纬度）</li>
+<li><strong>WIDTH / HEIGHT</strong>：输出图片尺寸</li>
+</ul>
+<h2>与 WFS 的区别</h2>
+<p>WMS 返回渲染好的图片，适合展示；WFS 返回矢量数据本身，支持空间过滤查询，适合分析与编辑。</p>
+<h2>典型应用</h2>
+<p>WMS 广泛用于 WebGIS 底图与专题图发布，可与 WMTS 瓦片服务配合提升大规模访问性能。</p>
+</body>
+</html>

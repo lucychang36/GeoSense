@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoSense — 空间智能分析助手</title>
+  <link rel="stylesheet" href="https://unpkg.com/mapbox-gl@3.6.0/dist/mapbox-gl.css">
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #161d24; --border: #2a343e;
+      --text: #e6edf3; --muted: #8b98a5; --accent: #4f8cff;
+      --tool: #b58a3d; --answer: #3d9a72; --error: #d4535b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      padding: 14px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    header .logo { font-size: 18px; font-weight: 600; }
+    header .sub { color: var(--muted); font-size: 12px; }
+    header .cog-toggle {
+      margin-left: auto; display: flex; align-items: center; gap: 5px;
+      color: var(--muted); font-size: 12px; cursor: pointer; user-select: none;
+    }
+    main { flex: 1; display: flex; min-height: 0; }
+    #map { flex: 1; background: #1a2129; }
+    .side {
+      width: 400px; display: flex; flex-direction: column; border-left: 1px solid var(--border);
+    }
+    .chat { flex: 1; overflow-y: auto; padding: 16px; }
+    .msg { margin-bottom: 14px; }
+    .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .msg.user .bubble { background: #233a5c; }
+    .msg.assistant .bubble { background: var(--panel); }
+    .bubble { padding: 10px 12px; border-radius: 10px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; }
+    .step {
+      font-size: 13px; padding: 8px 10px; border-radius: 8px; margin: 6px 0;
+      background: var(--panel); border-left: 3px solid var(--tool);
+    }
+    .step.tool { border-left-color: var(--tool); color: #d8b56a; }
+    .step.result { border-left-color: #6b7280; color: var(--muted); }
+    .step.answer { border-left-color: var(--answer); }
+    .step.error { border-left-color: var(--error); color: #f2a1a6; }
+    .input-bar { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+    .input-bar textarea {
+      flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 10px; font-size: 14px; resize: none; height: 44px;
+      font-family: inherit;
+    }
+    .input-bar button {
+      background: var(--accent); color: white; border: none; border-radius: 8px;
+      padding: 0 18px; font-size: 14px; cursor: pointer; flex-shrink: 0;
+    }
+    .input-bar button:disabled { opacity: .5; cursor: not-allowed; }
+    .hint { padding: 4px 16px 0; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">🌏 GeoSense</span>
+    <span class="sub">空间智能分析助手 · LangGraph + GIS 工具</span>
+    <label class="cog-toggle" title="叠加深圳湾卫星影像（阶段2 W4：COG 瓦片服务）">
+      <input type="checkbox" id="cogToggle" checked> 卫星影像
+    </label>
+  </header>
+
+  <main>
+    <div id="map"></div>
+    <!-- 关键修复：Vue 挂载在整个 .side 上，保证 input-bar 里的 v-model / @click 生效 -->
+    <div class="side" id="app">
+      <div class="chat" ref="chat">
+        <div class="msg assistant">
+          <div class="bubble">你好，我是 GeoSense，底图已叠加深圳湾卫星影像（COG），数据来自真实 POI（OpenStreetMap）。试着问我：<br>「查询深圳市龙岗区的医院分布」<br>「深圳市民中心 (114.0579, 22.5431) 周边 3 公里内的学校」</div>
+        </div>
+
+        <div class="msg user" v-for="(m, i) in messages" :key="i">
+          <div class="who">你</div>
+          <div class="bubble">{{ m }}</div>
+          <div class="step tool" v-for="(t, j) in stepsOf(i)" :key="'t'+j">
+            ⚙ 调用 {{ t.name }}({{ short(t.args) }})
+          </div>
+          <div class="step answer" v-if="answerOf(i)">💬 {{ answerOf(i) }}</div>
+        </div>
+      </div>
+
+      <div class="hint">工具调用链会实时显示在消息下方</div>
+      <div class="input-bar">
+        <textarea v-model="input" @keydown.enter.exact.prevent="send" placeholder="输入空间分析问题…"></textarea>
+        <button :disabled="busy" @click="send">{{ busy ? '分析中…' : '发送' }}</button>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://unpkg.com/mapbox-gl@3.6.0/dist/mapbox-gl.js"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    const { createApp } = Vue;
+
+    // ---- 地图初始化（token 由后端 /api/config 下发，前端不写死密钥）----
+    let map;
+    fetch('/api/config').then(r => r.json()).then(cfg => {
+      mapboxgl.accessToken = cfg.mapbox_token || 'YOUR_MAPBOX_ACCESS_TOKEN';
+      initMap();
+    });
+
+    function initMap() {
+      // 地图（Mapbox GL，注意坐标顺序是 [经度, 纬度]）
+      map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/dark-v11',
+        center: [114.06, 22.54],
+        zoom: 12,
+      });
+      map.addControl(new mapboxgl.NavigationControl());
+      registerMapEvents();   // 地图就绪后注册图层与交互
+    }
+
+    // ---- POI 类型配色（与 PostGIS poi.type 对应）----
+    const TYPE_COLORS = {
+      '学校': '#4f8cff', '幼儿园': '#9b59b6', '大学': '#6c5ce7',
+      '医院': '#d4535b', '诊所': '#e67e22',
+      '警察局': '#f1c40f', '消防站': '#e74c3c',
+      '图书馆': '#00b894', '公园': '#2ecc71', '地铁站': '#16a085',
+    };
+    // Mapbox 数据驱动样式：按 feature.properties.type 取色
+    const TYPE_MATCH = ['match', ['get', 'type']];
+    Object.entries(TYPE_COLORS).forEach(([t, c]) => TYPE_MATCH.push(t, c));
+    TYPE_MATCH.push('#8b98a5');   // 未知类型兜底色
+
+    const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+
+    // ---- 阶段2 W4：叠加 COG 卫星影像底图（指向本地瓦片服务 :8001）----
+    // 默认用「真实拼接」（szbay_real_mosaic）：跨 UTM 分带 7 景拼接，深圳湾全覆盖 95%，
+    // 真实可识别的 Sentinel-2 影像。可切换：合成场景（szbay_2023-06）或单景真实（szbay_real_20250727）。
+    const COG_TILE_URL =
+      'http://127.0.0.1:8001/tiles/{z}/{x}/{y}.png?path=data/cogs/szbay_real_mosaic.tif';
+    const COG_BOUNDS = [113.88, 22.46, 114.10, 22.60];   // 深圳湾（需与场景 bbox 一致）
+
+    // 地图底图加载完成后：四层结构（从上到下）
+    //  1) query-points —— 查询结果里的点（医院/学校等），永远盖在最上层
+    //  2) poi 聚合源   —— 全部 POI（cluster 聚合，缩放越深显示越细）
+    //  3) district/buffer —— 区边界高亮 / 查询结果里的面线
+    //  4) cog 栅格     —— 卫星影像底图（W4 新增，位于最下层）
+    function registerMapEvents() {
+    map.on('load', () => {
+      map.addSource('cog', {
+        type: 'raster',
+        tiles: [COG_TILE_URL],      // Mapbox GL 会把 {z}/{x}/{y} 替换成瓦片坐标
+        tileSize: 256,
+        bounds: COG_BOUNDS,
+        minzoom: 0,
+        maxzoom: 16,
+      });
+      map.addLayer({ id: 'cog-layer', type: 'raster', source: 'cog',
+        paint: { 'raster-opacity': 0.75 } });
+      // 立即缩放到影像范围，让卫星图层完整可见（否则默认视图可能只看到局部）
+      map.fitBounds(COG_BOUNDS, { padding: 40, maxZoom: 14 });
+      document.getElementById('cogToggle').addEventListener('change', (e) => {
+        map.setLayoutProperty('cog-layer', 'visibility',
+          e.target.checked ? 'visible' : 'none');
+      });
+
+      map.addSource('buffer', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({ id: 'buffer-fill', type: 'fill', source: 'buffer',
+        paint: { 'fill-color': '#3d9a72', 'fill-opacity': 0.2 } });
+      map.addLayer({ id: 'buffer-line', type: 'line', source: 'buffer',
+        paint: { 'line-color': '#3d9a72', 'line-width': 2 } });
+
+      // 区边界高亮：用户问题提到区名时，由后端的 district 事件推送边界并绘制
+      map.addSource('district', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({ id: 'district-fill', type: 'fill', source: 'district',
+        paint: { 'fill-color': '#f1c40f', 'fill-opacity': 0.10 } });
+      map.addLayer({ id: 'district-line', type: 'line', source: 'district',
+        paint: { 'line-color': '#f1c40f', 'line-width': 3, 'line-dasharray': [4, 2] } });
+      map.addLayer({ id: 'district-label', type: 'symbol', source: 'district',
+        layout: { 'text-field': ['get', 'name'], 'text-size': 16, 'text-anchor': 'center' },
+        paint: { 'text-color': '#f1c40f', 'text-halo-color': '#000000', 'text-halo-width': 1.5 } });
+
+      map.addSource('query-points', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({ id: 'query-points-circle', type: 'circle', source: 'query-points',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 8, 16, 13],
+          'circle-color': TYPE_MATCH,
+          'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2,
+        } });
+
+      fetch('/api/poi').then(r => r.json()).then(fc => {
+        map.addSource('poi', { type: 'geojson', data: fc, cluster: true, clusterRadius: 50 });
+        // 聚合圆点
+        map.addLayer({ id: 'poi-cluster', type: 'circle', source: 'poi',
+          filter: ['has', 'point_count'],
+          paint: {
+            'circle-color': ['step', ['get', 'point_count'], '#4f8cff', 20, '#3d9a72', 100, '#d4535b'],
+            'circle-radius': ['step', ['get', 'point_count'], 15, 20, 20, 100, 26],
+            'circle-opacity': 0.85,
+          } });
+        // 聚合数量文字
+        map.addLayer({ id: 'poi-cluster-count', type: 'symbol', source: 'poi',
+          filter: ['has', 'point_count'],
+          layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-size': 12 },
+          paint: { 'text-color': '#ffffff' } });
+        // 未聚合的单点（按类型着色）
+        map.addLayer({ id: 'poi-point', type: 'circle', source: 'poi',
+          filter: ['!', ['has', 'point_count']],
+          paint: {
+            'circle-radius': 5,
+            'circle-color': TYPE_MATCH,
+            'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1,
+          } });
+      }).catch(err => console.warn('加载 /api/poi 失败（PostGIS 未启动？）', err));
+
+      // 交互：点聚合 → 放大展开；点单个 POI → 弹窗显示名称类型
+      map.on('click', 'poi-cluster', (e) => {
+        const f = e.features[0];
+        map.getSource('poi').getClusterExpansionZoom(f.properties.cluster_id,
+          (err, zoom) => { if (!err) map.easeTo({ center: f.geometry.coordinates, zoom }); });
+      });
+      map.on('click', 'poi-point', (e) => {
+        const f = e.features[0];
+        new mapboxgl.Popup()
+          .setLngLat(f.geometry.coordinates)
+          .setHTML(`<b>${f.properties.name}</b><br>${f.properties.type}`)
+          .addTo(map);
+      });
+      map.on('mouseenter', 'poi-point', () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', 'poi-point', () => { map.getCanvas().style.cursor = ''; });
+    });
+    }
+
+    // 计算 GeoJSON 的范围，用于 fitBounds
+    function geojsonBounds(geojson) {
+      const pts = [];
+      const rec = (x) => {
+        if (typeof x[0] === 'number') { pts.push(x); return; }
+        x.forEach(rec);
+      };
+      const g = geojson.type === 'FeatureCollection' ? geojson.features.map(f => f.geometry)
+                 : [geojson];
+      g.forEach(geom => {
+        if (geom.type === 'GeometryCollection') geom.geometries.forEach(rec);
+        else if (geom.coordinates) rec(geom.coordinates);
+      });
+      if (!pts.length) return null;
+      const lngs = pts.map(p => p[0]), lats = pts.map(p => p[1]);
+      return [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
+    }
+
+    createApp({
+      data() {
+        return { input: '', messages: [], steps: [], answers: [], busy: false };
+      },
+      methods: {
+        short(args) {
+          try { return JSON.stringify(args).slice(0, 60); } catch { return ''; }
+        },
+        stepsOf(i) { return this.steps[i] || []; },
+        answerOf(i) { return this.answers[i] || ''; },
+        async send() {
+          const q = this.input.trim();
+          if (!q || this.busy) return;
+          this.busy = true;
+          const idx = this.messages.push(q) - 1;
+          this.steps[idx] = [];
+          this.answers[idx] = '';
+          this.input = '';
+
+          const resp = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q }),
+          });
+
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let sep;
+            while ((sep = buf.indexOf('\n\n')) >= 0) {
+              const raw = buf.slice(0, sep); buf = buf.slice(sep + 2);
+              const ev = this.parseEvent(raw);
+              if (ev) this.handleEvent(ev, idx);
+            }
+          }
+          this.busy = false;
+        },
+        parseEvent(raw) {
+          let event = 'message', data = '';
+          for (const line of raw.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          if (!data) return null;
+          try { return { event, data: JSON.parse(data) }; } catch { return null; }
+        },
+        handleEvent(ev, idx) {
+          if (ev.event === 'status') {
+            // 新一轮提问开始：清掉上一轮的区边界高亮（district 事件随后会重新绘制）
+            if (map.getSource('district')) map.getSource('district').setData(EMPTY_FC);
+          } else if (ev.event === 'district' && ev.data.geojson) {
+            this.drawDistrict(ev.data.geojson, ev.data.name);
+          } else if (ev.event === 'tool') {
+            this.steps[idx].push({ name: ev.data.name, args: ev.data.args });
+          } else if (ev.event === 'result' && ev.data.geojson) {
+            this.drawGeoJSON(ev.data.geojson);
+          } else if (ev.event === 'answer') {
+            this.answers[idx] += ev.data.delta;
+          } else if (ev.event === 'error') {
+            this.answers[idx] = '❌ ' + ev.data.message;
+          }
+          this.$nextTick(() => {
+            const c = this.$refs.chat;
+            if (c) c.scrollTop = c.scrollHeight;
+          });
+        },
+        drawGeoJSON(geojson) {
+          // 按几何类型分流：点 → query-points 图层；面/线 → buffer 图层
+          const points = { type: 'FeatureCollection', features: [] };
+          const others = { type: 'FeatureCollection', features: [] };
+          (geojson.features || []).forEach(f => {
+            const g = f.geometry;
+            if (g && (g.type === 'Point' || g.type === 'MultiPoint')) points.features.push(f);
+            else others.features.push(f);
+          });
+          map.getSource('query-points').setData(points);
+          map.getSource('buffer').setData(others);
+          const bb = geojsonBounds(geojson);
+          if (bb) map.fitBounds(bb, { padding: 60 });
+        },
+        drawDistrict(geojson, name) {
+          // 用户问题提到某区：高亮该区边界并缩放到全区
+          map.getSource('district').setData(geojson);
+          const bb = geojsonBounds(geojson);
+          if (bb) map.fitBounds(bb, { padding: 80 });
+          console.info(`高亮区边界：${name}`);
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

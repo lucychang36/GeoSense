@@ -1,0 +1,42 @@
+# GeoSense 依赖清单（随学习阶段逐步增加）
+
+# ---- 阶段1 第1月：LLM API 对接 ----
+openai>=1.40            # OpenAI 官方 SDK，兼容 DeepSeek/通义千问等 OpenAI 协议 API
+python-dotenv>=1.0      # 从 .env 文件读取环境变量（API Key 不落代码）
+rich>=13.7              # 终端美化输出，方便观察流式响应和调试
+
+# ---- 阶段1 第3月：Agent 工具集 ----
+shapely>=2.0            # 几何计算（Point/buffer/面积）
+pyproj>=3.6             # 坐标系转换、测地线距离
+
+# ---- 阶段2 第2月：RAG 系统 ----
+sentence-transformers>=3.0   # 本地 Embedding 模型加载
+scikit-learn>=1.4            # PCA 降维、后续评估指标
+chromadb>=1.0,<2.0           # 向量库（开发期）。⚠ 必须 1.x：0.x 与 1.x 存储格式不兼容
+pypdf>=4.0                   # PDF 文本抽取
+beautifulsoup4>=4.12         # HTML 文本抽取
+
+# ---- 阶段1 第3月：Agent 框架 ----
+langgraph>=1.0               # 多 Agent 编排（状态图 + ReAct）
+langchain-openai>=1.0        # LangChain 的 OpenAI 兼容模型接口（接 DeepSeek）
+
+# ---- 阶段1 第3月：Web 接口 ----
+fastapi>=0.110               # RESTful API 框架
+uvicorn>=0.30                # ASGI 服务器（跑 FastAPI）
+
+# ---- 阶段1 补课：PostGIS SQL 生成/执行 ----
+psycopg[binary]>=3.1         # PostgreSQL 驱动（psycopg3）；binary 自带编译好的二进制，免本地编译
+
+# ---- 阶段2 第4月：云原生遥感数据（COG） ----
+rasterio>=1.3                # 栅格读写（自带 GDAL wheel，无需系统 GDAL）
+rio-cogeo>=5.0               # 普通 GeoTIFF → COG（内部 tiling + overview 金字塔）
+rio-tiler>=6.0               # COG 在线读取 / XYZ 瓦片输出（W2 用）
+
+# ---- 阶段2 第5月：STAC + GeoParquet ----
+pystac>=1.9                  # STAC 目录构建/校验（W1）
+pystac-client>=0.7           # 标准 STAC API 客户端（W2 检索）
+duckdb>=1.0                  # 列式分析引擎（W3）
+# ⚠ duckdb spatial 扩展需手动安装：
+#   curl -o /tmp/s.gz "http://extensions.duckdb.org/v1.5.5/osx_arm64/spatial.duckdb_extension.gz"
+#   gunzip /tmp/s.gz && mv /tmp/s ~/.duckdb/extensions/v1.5.5/osx_arm64/spatial.duckdb_extension
+

@@ -1,0 +1,29 @@
+# 启用 pgvector 的替代配置（阶段2 RAG 迁移时使用）。
+# 与默认 docker-compose.yml 唯一区别：用 Dockerfile 自建镜像（PostGIS + pgvector）。
+# 使用方式：
+#   docker compose -f docker-compose.pgvector.yml up -d --build
+# ⚠ 构建时容器需能访问 Debian apt 源，否则 apt 安装 pgvector 会失败。
+services:
+  postgis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.postgis
+    image: geosense-postgis:pgvector
+    container_name: geosense-postgis
+    environment:
+      POSTGRES_USER: geosense
+      POSTGRES_PASSWORD: geosense
+      POSTGRES_DB: geosense
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geosense -d geosense"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

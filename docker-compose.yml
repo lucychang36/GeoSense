@@ -1,0 +1,29 @@
+# GeoSense 数据基础设施：PostgreSQL 16 + PostGIS 3.4
+# 启动：docker compose up -d
+# 停止：docker compose down          （保留数据卷，下次启动数据还在）
+# 清库：docker compose down -v        （连数据卷一起删，下次启动会重跑 init 脚本）
+#
+# ⚠ 关于 pgvector（预留）：本镜像未内置 pgvector（安装需容器能访问 Debian 源）。
+#   阶段2 RAG 迁移到 pgvector 时，改用 docker/Dockerfile.postgis 自建镜像：
+#   docker compose -f docker-compose.pgvector.yml up -d --build
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: geosense-postgis
+    environment:
+      POSTGRES_USER: geosense
+      POSTGRES_PASSWORD: geosense
+      POSTGRES_DB: geosense
+    ports:
+      - "5432:5432"   # 宿主机 5432 → 容器 5432（与 DATABASE_URL 对应）
+    volumes:
+      - pgdata:/var/lib/postgresql/data                       # 数据持久化
+      - ./backend/db/init:/docker-entrypoint-initdb.d:ro      # 首次启动自动执行建扩展脚本
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geosense -d geosense"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

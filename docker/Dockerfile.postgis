@@ -1,0 +1,12 @@
+# 基于官方 PostGIS 镜像，追加 pgvector 扩展 —— 阶段2 RAG 迁移时启用。
+# ⚠ 使用前提：构建时容器需要能访问 Debian 官方 apt 源（deb.debian.org）。
+#   若本机代理对容器网络不通（apt 连接失败），请保持默认 compose 配置
+#   （直接用 postgis/postgis:16-3.4），pgvector 延后到网络就绪时再装。
+# 启用方式：
+#   docker compose -f docker-compose.pgvector.yml up -d --build
+FROM postgis/postgis:16-3.4
+
+# postgis/postgis 镜像已内置 PGDG apt 源，可直接安装对应版本的 pgvector
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-16-pgvector \
+    && rm -rf /var/lib/apt/lists/*
