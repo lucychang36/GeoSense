@@ -60,14 +60,14 @@
 | W3 | 遥感数据下载 + COG 仓库 | `scripts/satellite_download.py`（合成/真实双模式）+ `data/cogs/` + `manifest.json` | ✅ |
 | W4 | 性能优化 + 可视化验证 | `scripts/cog_benchmark.py` + 前端 COG 栅格图层（含开关） | ✅ |
 
-**阶段2 第5月：STAC + GeoParquet（进行中）**
+**阶段2 第5月：STAC + GeoParquet ✅（全部完成）**
 
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | STAC 规范 + pystac 实践 | `scripts/stac_catalog.py` + `data/stac/`（Catalog→Collection→Item 三层） | ✅ |
-| W2 | STAC API 服务 | `stac_api/main.py`（/collections、/items、/search 时间/空间过滤） | ✅ |
+| W2 | STAC API 服务 | `stac_api/main:app` + `pystac-client`（/collections、/search 时间/空间过滤） | ✅ |
 | W3 | GeoParquet + DuckDB Spatial | `scripts/export_geoparquet.py` + `scripts/duckdb_spatial.py` + `data/gpq/` | ✅ |
-| W4 | 集成：STAC 检索 → COG 读取 → 分析 | `data_pipeline.py` | ⬜ |
+| W4 | 集成：STAC 检索 → COG 读取 → NDVI | `scripts/data_pipeline.py` + `data/output/ndvi_*.png`（高斯平滑出图） | ✅ |
 
 ## 项目结构
 
@@ -128,7 +128,8 @@ GeoSense/
 │   ├── cog_benchmark.py   # 阶段2 W4：普通 GeoTIFF vs COG 性能基准（4096 测试对）
 │   ├── stac_catalog.py    # 第5月 W1：为 COG 影像创建 STAC 目录（pystac）
 │   ├── export_geoparquet.py # 第5月 W3：PostGIS → GeoParquet 导出
-│   └── duckdb_spatial.py  # 第5月 W3：DuckDB 空间查询 + 百万级基准
+│   ├── duckdb_spatial.py  # 第5月 W3：DuckDB 空间查询 + 百万级基准
+│   └── data_pipeline.py   # 第5月 W4：STAC 检索 → COG 读取 → NDVI（统计用原始值，出图前高斯平滑）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -185,6 +186,9 @@ python scripts/stac_catalog.py                # 第5月W1：为 COG 影像创建
 uvicorn stac_api.main:app --port 8002         # 第5月W2：STAC API 服务（/search 支持 datetime/bbox）
 python scripts/export_geoparquet.py           # 第5月W3：PostGIS → GeoParquet（需容器运行）
 python scripts/duckdb_spatial.py              # 第5月W3：DuckDB 空间查询 + 500万点基准
+# 第5月W4：端到端流水线（需 STAC API :8002 先起）
+uvicorn stac_api.main:app --port 8002 &        # 后台启 STAC API
+python scripts/data_pipeline.py                # STAC 检索 → COG → NDVI（出图前高斯平滑，统计用原始值）
 # W4 前端：打开 http://127.0.0.1:8000/，地图底图已叠加深圳湾卫星影像（可开关）
 
 # 5. 启动 Web 界面（第3月W4）
@@ -221,6 +225,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第2月** 100+ 文档 GIS 知识库、RAG 准确率 > 70%、混合检索、延迟 < 2s
 - [x] **第3月** ReAct Agent、多工具空间分析、流式输出、前端界面
 - [x] **补课** PostGIS SQL 生成 + 只读安全校验 + OSM 真实数据（10 区边界 + 3000+ POI）+ 前端地图可视化
-- [ ] 第4-6月 STAC + COG + GeoParquet + DuckDB 空间大数据（第4月 ✅ 全4周；第5月 ✅ W1 STAC 目录 / W2 STAC API / W3 GeoParquet+DuckDB 500万点 748ms；W4 数据流水线待做）
+- [ ] 第4-6月 STAC + COG + GeoParquet + DuckDB 空间大数据（第4月 ✅ 全4周；第5月 ✅ W1 STAC 目录 / W2 STAC API / W3 GeoParquet+DuckDB 500万点 748ms / **W4 STAC→COG→NDVI 端到端流水线**）
 - [ ] 第7-9月 遥感 AI（分割/检测/变化检测）+ 模型服务化
 - [ ] 第10-12月 多 Agent + 自动制图 + 自动报告 + 端到端平台
