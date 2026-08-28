@@ -1,0 +1,19 @@
+# GeoSense 后端镜像 —— 第6月 W3 容器化部署
+# 构建：docker compose -f docker-compose.pgvector.yml up -d --build
+# ⚠ 依赖安装走清华镜像（容器网络直连 PyPI 不稳，清华源实测可达）
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 1. 先装依赖（利用 Docker 层缓存：requirements 不变则跳过这层）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+# 2. 拷贝源码（.dockerignore 已排除 data/ .venv/ .env 等）
+COPY . .
+
+EXPOSE 8000
+
+# 3. 启动 Web 服务（容器内监听 0.0.0.0 才能被端口映射访问）
+CMD ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,8 +1,7 @@
-# 启用 pgvector 的替代配置（阶段2 RAG 迁移时使用）。
-# 与默认 docker-compose.yml 唯一区别：用 Dockerfile 自建镜像（PostGIS + pgvector）。
-# 使用方式：
-#   docker compose -f docker-compose.pgvector.yml up -d --build
-# ⚠ 构建时容器需能访问 Debian apt 源，否则 apt 安装 pgvector 会失败。
+# 全套服务编排（第6月 W3）：PostGIS+pgvector + GeoSense 后端
+# 一键启动：docker compose -f docker-compose.pgvector.yml up -d --build
+# 浏览器打开 http://127.0.0.1:8000/（后端容器）
+# ⚠ 构建 postgis 需访问 Debian apt 源；构建 backend 需访问清华 PyPI 源。
 services:
   postgis:
     build:
@@ -24,6 +23,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    image: geosense-backend
+    container_name: geosense-backend
+    ports:
+      - "8000:8000"
+    # .env 提供 DEEPSEEK_API_KEY / MAPBOX_TOKEN 等（.env 不入镜像，运行时注入）
+    env_file:
+      - .env
+    environment:
+      # 容器内数据库地址用服务名 postgis（不是 localhost）
+      DATABASE_URL: postgresql://geosense:geosense@postgis:5432/geosense
+    depends_on:
+      postgis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/config', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 volumes:
   pgdata:

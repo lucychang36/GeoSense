@@ -69,6 +69,18 @@
 | W3 | GeoParquet + DuckDB Spatial | `scripts/export_geoparquet.py` + `scripts/duckdb_spatial.py` + `data/gpq/` | ✅ |
 | W4 | 集成：STAC 检索 → COG 读取 → NDVI | `scripts/data_pipeline.py` + `data/output/ndvi_*.png`（高斯平滑出图） | ✅ |
 
+**阶段2 第6月：pgvector + 生产化 ✅（全部完成，阶段2 收官）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | pgvector 向量库迁移 | `backend/rag/vector_store_pg.py` + `scripts/migrate_vectorstore.py`（Chroma→pgvector 一致性验证） | ✅ |
+| W2 | RAG 链路切换 pgvector | `scripts/rag_chain.py --backend pgvector`（一行切换 + 延迟对比） | ✅ |
+| W3 | 容器化部署（Docker 化服务） | `docker/Dockerfile.backend` + `.dockerignore` + compose 增加 backend 服务 | ✅ |
+| W4 | 性能压测 + 验收 | `scripts/benchmark_w4.py`（连接池优化 + 空间索引 + 全链路压测） | ✅ |
+
+> **第6月 W4 压测关键发现**：① 连接池（psycopg_pool）让 pgvector 检索 144ms→18.6ms（8×）；
+> ② PostGIS `poi` 表缺空间索引，按区统计 2.4s→217ms（11×），`poi_geom_gix`（GIST）已补进 schema.py。
+
 ## 项目结构
 
 ```
@@ -97,7 +109,8 @@ GeoSense/
 │   ├── data/               # 栅格读取层（阶段2 第4月 W2）
 │   │   └── cog_reader.py   # COG 在线读取封装（rio-tiler：瓦片 / 局部读取 / 8位渲染）
 │   └── rag/                # RAG 模块（第2月）
-│       ├── vector_store.py # 向量库封装（Chroma，cosine 空间）
+│       ├── vector_store.py # 向量库封装（Chroma，cosine 空间，开发期）
+│       ├── vector_store_pg.py # 向量库封装（pgvector，第6月W1 生产版，同接口）
 │       ├── doc_processor.py # 文档处理（PDF/MD/HTML 抽取 + 递归切片）
 │       ├── retriever.py    # 混合检索（BM25 关键词 + 语义 + RRF 融合）
 │       ├── evaluation.py   # 检索评估指标（HitRate/Recall/MRR）
@@ -112,7 +125,7 @@ GeoSense/
 │   ├── gis_tools.py        # W4：Function Calling 闭环
 │   ├── vector_store.py     # 第2月 W1：向量库建库检索
 │   ├── doc_processor.py    # 第2月 W2：文档切片 + 入库检索
-│   ├── rag_chain.py        # 第2月 W3：混合检索 + RAG 问答
+│   ├── rag_chain.py        # 第2月 W3：混合检索 + RAG 问答（第6月W2 起支持 --backend chroma|pgvector）
 │   ├── rag_evaluation.py   # 第2月 W4：检索评估 + 优化
 │   ├── basic_agent.py      # 第3月 W1：ReAct Agent
 │   ├── gis_agent.py        # 第3月 W2：多工具空间分析 Agent
@@ -129,7 +142,9 @@ GeoSense/
 │   ├── stac_catalog.py    # 第5月 W1：为 COG 影像创建 STAC 目录（pystac）
 │   ├── export_geoparquet.py # 第5月 W3：PostGIS → GeoParquet 导出
 │   ├── duckdb_spatial.py  # 第5月 W3：DuckDB 空间查询 + 百万级基准
-│   └── data_pipeline.py   # 第5月 W4：STAC 检索 → COG 读取 → NDVI（统计用原始值，出图前高斯平滑）
+│   ├── data_pipeline.py   # 第5月 W4：STAC 检索 → COG 读取 → NDVI（统计用原始值，出图前高斯平滑）
+│   ├── migrate_vectorstore.py # 第6月 W1：Chroma → pgvector 迁移 + 一致性验证
+│   └── benchmark_w4.py    # 第6月 W4：全链路压测 + 阶段2 验收报告
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -191,6 +206,13 @@ uvicorn stac_api.main:app --port 8002 &        # 后台启 STAC API
 python scripts/data_pipeline.py                # STAC 检索 → COG → NDVI（出图前高斯平滑，统计用原始值）
 # W4 前端：打开 http://127.0.0.1:8000/，地图底图已叠加深圳湾卫星影像（可开关）
 
+# 5.5 第6月：pgvector 迁移 + 容器化部署
+docker compose -f docker-compose.pgvector.yml up -d --build   # 一键起全套（postgis+backend）
+python scripts/vector_store.py                 # 先确保 Chroma 知识库存在（22 条）
+python scripts/migrate_vectorstore.py          # Chroma → pgvector + 检索一致性验证
+python scripts/rag_chain.py --backend pgvector # 第6月W2：RAG 链路一行切换 pgvector（默认 chroma）
+python scripts/benchmark_w4.py                 # 第6月W4：全链路压测 + 阶段2 验收报告
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -211,7 +233,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | LLM | DeepSeek（OpenAI 兼容协议） | 主力推理，Function Calling 强 |
 | Embedding | BAAI/bge-small-zh-v1.5 | 本地开源，零成本离线 |
 | 向量库（开发） | Chroma | 本地持久化，cosine 空间 |
-| 向量库（生产） | pgvector | 直连 PostgreSQL，阶段2 RAG 迁移时切换（已随容器预留） |
+| 向量库（生产） | pgvector | 直连 PostgreSQL，第6月W1 已迁移（HNSW 索引 + 余弦检索） |
 | 空间数据库 | PostgreSQL 16 + PostGIS 3.4 | 空间查询 / SQL 生成执行（阶段1 补课引入） |
 | 栅格处理 | rasterio + rio-cogeo | 栅格读写 / COG 转换（阶段2 第4月引入） |
 | 矢量分析 | GeoParquet + DuckDB Spatial | 列式空间分析，百万级秒查（阶段2 第5月引入） |
@@ -225,6 +247,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第2月** 100+ 文档 GIS 知识库、RAG 准确率 > 70%、混合检索、延迟 < 2s
 - [x] **第3月** ReAct Agent、多工具空间分析、流式输出、前端界面
 - [x] **补课** PostGIS SQL 生成 + 只读安全校验 + OSM 真实数据（10 区边界 + 3000+ POI）+ 前端地图可视化
-- [ ] 第4-6月 STAC + COG + GeoParquet + DuckDB 空间大数据（第4月 ✅ 全4周；第5月 ✅ W1 STAC 目录 / W2 STAC API / W3 GeoParquet+DuckDB 500万点 748ms / **W4 STAC→COG→NDVI 端到端流水线**）
+- [x] **第4-6月** 空间大数据 + 生产化（第4月 ✅ COG 全链路；第5月 ✅ STAC/GeoParquet/DuckDB/端到端流水线；第6月 ✅ pgvector 迁移+容器化+压测验收：检索 18.6ms / 空间查询 217ms / 500万点 817ms）
 - [ ] 第7-9月 遥感 AI（分割/检测/变化检测）+ 模型服务化
 - [ ] 第10-12月 多 Agent + 自动制图 + 自动报告 + 端到端平台

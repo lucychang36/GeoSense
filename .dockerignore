@@ -1,0 +1,24 @@
+# Docker 构建上下文排除（第6月 W3）
+# ⚠ 这些目录/文件不进镜像：体积、密钥、运行时数据
+
+# 密钥与配置
+.env
+*.env.local
+
+# 依赖与缓存
+.venv/
+__pycache__/
+*.py[cod]
+
+# 运行时数据（大文件：影像/向量库/合成数据）
+data/
+
+# 个人笔记与 Docker 本机配置
+.workbuddy/
+.docker/
+
+# git
+.git/
+
+# 系统
+.DS_Store

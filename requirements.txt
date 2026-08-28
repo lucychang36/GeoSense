@@ -38,6 +38,10 @@ pystac-client>=0.7           # 标准 STAC API 客户端（W2 检索）
 duckdb>=1.0                  # 列式分析引擎（W3）
 matplotlib>=3.8              # NDVI 色带图（W4）
 scipy>=1.11                  # NDVI 出图前高斯平滑（W4）
+
+# ---- 阶段2 第6月：pgvector 向量库 ----
+pgvector>=0.2                # PostgreSQL 向量扩展的 Python 驱动（W1）
+# ⚠ 容器需用 docker-compose.pgvector.yml（自建镜像含 pgvector 扩展）
 # ⚠ duckdb spatial 扩展需手动安装：
 #   curl -o /tmp/s.gz "http://extensions.duckdb.org/v1.5.5/osx_arm64/spatial.duckdb_extension.gz"
 #   gunzip /tmp/s.gz && mv /tmp/s ~/.duckdb/extensions/v1.5.5/osx_arm64/spatial.duckdb_extension

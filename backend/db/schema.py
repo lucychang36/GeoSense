@@ -21,6 +21,10 @@ DDL_STATEMENTS = [
         geom GEOMETRY(Point, 4326)    -- WGS84 经纬度坐标
     );
     """,
+    # 空间索引：ST_Within/ST_Intersects 等空间谓词的加速关键（第6月 W4 压测发现缺失）
+    """
+    CREATE INDEX IF NOT EXISTS poi_geom_gix ON poi USING gist(geom);
+    """,
     # 学校表：独立维护（示例数据从 POI 中 type='学校' 派生）
     """
     CREATE TABLE IF NOT EXISTS schools (

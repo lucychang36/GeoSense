@@ -6,13 +6,21 @@
   实验2  RRF 融合过程：看两路排序如何融合成最终排名
   实验3  RAG 问答链路：检索 → 拼带引用的 Prompt → LLM 生成带出处答案
 
+第6月 W2 扩展：--backend 一行切换向量库
+  --backend chroma   （默认）开发期 Chroma
+  --backend pgvector 生产期 pgvector（接口相同，业务代码零改动 —— 这就是"迁移"）
+  切换后顺带打印语义检索延迟，对比两个后端的性能。
+
 运行方式：
-  .venv/bin/python scripts/rag_chain.py    # 实验3 需要 DEEPSEEK_API_KEY
+  .venv/bin/python scripts/rag_chain.py                # Chroma（默认）
+  .venv/bin/python scripts/rag_chain.py --backend pgvector   # pgvector（需容器在跑）
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +33,7 @@ from backend.core.config import llm_config
 from backend.core.llm import LLMClient
 from backend.rag.retriever import HybridRetriever
 from backend.rag.vector_store import VectorStore
+from backend.rag.vector_store_pg import PgVectorStore
 
 console = Console()
 KB_PATH = Path(__file__).resolve().parents[1] / "backend" / "rag" / "data" / "gis_knowledge.json"
@@ -38,10 +47,15 @@ RAG_SYSTEM = (
 )
 
 
-def build_store() -> HybridRetriever:
-    """初始化语料库：把 gis_knowledge.json 索引进向量库，返回混合检索器。"""
+def build_store(backend: str) -> HybridRetriever:
+    """初始化语料库：按 backend 选择向量库实现（接口相同），返回混合检索器。"""
     items = json.loads(KB_PATH.read_text(encoding="utf-8"))
-    store = VectorStore(collection="rag_corpus")
+    if backend == "pgvector":
+        store = PgVectorStore(collection="rag_corpus")
+        console.print("[dim]向量后端：pgvector（PostgreSQL + HNSW 索引）[/]")
+    else:
+        store = VectorStore(collection="rag_corpus")
+        console.print("[dim]向量后端：Chroma（本地磁盘 + HNSW 索引）[/]")
     if store.count() == 0:
         store.add(
             ids=[it["id"] for it in items],
@@ -104,8 +118,26 @@ def demo_3_rag_answer(retriever: HybridRetriever, client: LLMClient) -> None:
     console.print(f"[yellow]Token 用量：{usage}")
 
 
+def bench_search(retriever: HybridRetriever, n: int = 5) -> None:
+    """语义检索延迟基准：同一查询连测 n 次，报告平均耗时（第6月 W2 对比用）。"""
+    query = "工厂周边5公里影响哪些地方"
+    retriever.semantic(query, top_k=3)  # 预热
+    times = []
+    for _ in range(n):
+        t0 = time.time()
+        retriever.semantic(query, top_k=3)
+        times.append((time.time() - t0) * 1000)
+    console.print(f"[cyan]语义检索延迟：avg {sum(times) / len(times):.1f} ms（{n} 次，min {min(times):.1f} ms）[/]")
+
+
 def main() -> None:
-    retriever = build_store()
+    parser = argparse.ArgumentParser(description="混合检索 + RAG 问答")
+    parser.add_argument("--backend", choices=["chroma", "pgvector"], default="chroma",
+                        help="向量库后端（第6月 W2：一行切换）")
+    args = parser.parse_args()
+
+    retriever = build_store(args.backend)
+    bench_search(retriever)
     demo_1_compare(retriever)
     demo_2_rrf(retriever)
 
@@ -113,7 +145,7 @@ def main() -> None:
         console.print("[yellow]实验3 需配置 DEEPSEEK_API_KEY（当前跳过）[/]")
         return
     demo_3_rag_answer(retriever, LLMClient())
-    console.rule("[bold green]W3 完成：混合检索 + RAG 问答跑通")
+    console.rule(f"[bold green]W3 完成：混合检索 + RAG 问答跑通（backend={args.backend}）")
 
 
 if __name__ == "__main__":
