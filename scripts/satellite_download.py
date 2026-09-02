@@ -158,8 +158,12 @@ def _write_and_convert(bands: list[np.ndarray], plain_path: Path, cog_path: Path
 REAL_BANDS = {"blue": "B2", "green": "B3", "red": "B4", "nir": "B8"}
 
 
-def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20) -> dict | None:
+def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20,
+                        tile: str | None = None) -> dict | None:
     """检索一景真实 Sentinel-2（深圳湾 bbox、低云量），远程裁剪为本地 COG。
+
+    tile：MGRS tile 过滤（如 "49QGE"）。变化检测需要同 tile 双时相配对——
+    不同 tile 轨道视角/网格不同，直接配对会产生大量伪变化。
 
     返回 manifest 条目；无可匹配影像时返回 None。
     """
@@ -168,18 +172,21 @@ def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20) -> di
     import urllib.request as _ur
     from rio_tiler.io import COGReader
 
-    # 1) STAC 检索：limit=5，随后挑选与 BBOX 重叠面积最大的景
+    # 1) STAC 检索：limit 视场景调整——tile 过滤时需要更大的候选池
     params = _up.urlencode({
         "collections": "sentinel-2-l2a",
         "bbox": ",".join(map(str, BBOX)),
         "datetime": f"{dt_start}T00:00:00Z/{dt_end}T23:59:59Z",
         "query": _json.dumps({"eo:cloud_cover": {"lt": cloud_max}}),
-        "limit": 5,
+        "limit": 30 if tile else 5,
     })
     search_url = f"https://earth-search.aws.element84.com/v1/search?{params}"
     print(f"🔎 STAC 检索（bbox={BBOX}，云量<{cloud_max}%）…")
     with _ur.urlopen(search_url, timeout=30) as resp:
         features = _json.load(resp).get("features", [])
+    if tile:
+        features = [f for f in features if f["id"].split("_")[1] == tile]
+        print(f"   tile 过滤 {tile}：剩余 {len(features)} 景")
     if not features:
         print("   ⚠ 无匹配影像（试试调整时间范围/放宽云量）")
         return None
@@ -326,6 +333,9 @@ def main() -> int:
                         help="跨 UTM 分带多景拼接（与 --real 同用，覆盖更完整）")
     parser.add_argument("--dt-start", default="2025-07-01", help="真实检索起始日期")
     parser.add_argument("--dt-end", default="2025-08-19", help="真实检索结束日期")
+    parser.add_argument("--tile", default=None,
+                        help="MGRS tile 过滤（如 49QGE；变化检测时相配对需同 tile）")
+    parser.add_argument("--cloud", type=float, default=20.0, help="最大云量（%）")
     parser.add_argument("--probe-real", action="store_true",
                         help="只探测真实数据源连通性（Copernicus/AWS STAC）")
     parser.add_argument("--scenes", type=int, default=len(DATES), help="合成模式景数")
@@ -346,7 +356,8 @@ def main() -> int:
 
     if args.real:
         entry = (download_real_mosaic(args.dt_start, args.dt_end) if args.mosaic
-                 else download_real_scene(args.dt_start, args.dt_end))
+                 else download_real_scene(args.dt_start, args.dt_end, cloud_max=args.cloud,
+                                          tile=args.tile))
         if entry:
             # 同 id 的旧条目先移除（支持重跑更新数据）
             manifest = [m for m in manifest if m["id"] != entry["id"]]
