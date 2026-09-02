@@ -146,6 +146,24 @@
 > ⑤ **真实数据演示**：合成 2022 vs 真实 2025-07-27，光谱差分 247,607 像素 / 分类后 207,513 像素被判变化 → 几乎全图都是"伪变化"，纯域差距
 > 红旗：① 真实数据无时相对 ② 合成纹理"随机变化"≠真实地物变化 ③ 跨域光谱/分类错误会产生"双错抵消"假象
 
+**阶段3 第9月：模型服务化 + 异步推理（W2 完成）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | 变化检测模型 | （学习计划 W1 为 Siamese 网络，已由第8月 W1/W2 的分类后比较 + 真实时相对检测覆盖） | ⏭ |
+| W2 | 模型服务化 | `backend/model_service/`（loader/segment/change/detect）+ `backend/api/main.py` 新增 `/api/model/*` 四个端点 | ✅ |
+
+> **第9月 W2 关键数据**：把第7-8月训练好的三个模型（U-Net 分割 / U-Net 变化检测 / YOLOv8 检测）封装成 FastAPI 推理服务——
+> ① **单例加载器**（`loader.py`）：进程内只 load 一次跨请求复用，MPS（Apple GPU）显存友好；`get_device()` 自动 MPS > CUDA > CPU
+> ② **路径安全**（`safe_cog_path`）：只允许读 `data/cogs/` 下的文件（剥目录 + 白名单校验，防 `../` 越权）
+> ③ **接口协议**：输出统一 base64 PNG（mask/变化叠加图）→ 前端可直接 `<img src=...>` 显示，无需后端落盘
+> ④ **四个端点实测全通**：`/api/model/health`（device=mps）、`/segment`（水 18.3% / 城 29.4% / 植 52.4%）、
+>    `/change`（postclass，change_ratio=**11.87%**，与第8月线下 11.9% 吻合）、`/detect`（44 艘船，conf≥0.25）
+> ⑤ **核心概念**：单例模式（资源只初始化一次）、lazy load（首次请求才加载权重，启动即快）、
+>    路由注册顺序坑（Starlette 按注册顺序匹配，`mount("/")` catch-all 必须先于 /api 路由之后注册，否则全 404）
+> ⚠ **诚实红旗**：① 同步推理（大影像整景推理时占用请求线程）② MPS 首次推理有编译预热 ③ 无鉴权/限流，仅限本地开发
+> 启动：`uvicorn backend.api.main:app --host 127.0.0.1 --port 8000`（模型首次请求 lazy 加载）
+
 ## 项目结构
 
 ```
@@ -165,7 +183,7 @@ GeoSense/
 │   │   ├── workflow.py     # 手写 StateGraph 多步工作流 + 错误处理（第3月W3）
 │   │   └── data/           # 深圳 POI 样例数据集（sz_poi.json）
 │   ├── api/                # Web 接口层（第3月W4）
-│   │   └── main.py         # FastAPI + SSE 流式 /chat 接口
+│   │   └── main.py         # FastAPI + SSE 流式 /chat + /api/model/* 推理端点（第9月W2）
 │   ├── db/                 # 数据层（阶段1 补课）
 │   │   ├── connection.py   # PostGIS 连接 + 参数化查询 + GeoJSON 转换
 │   │   ├── schema.py       # 表结构单一事实来源（DDL / 表白名单 / LLM schema 提示）
@@ -173,16 +191,21 @@ GeoSense/
 │   │   └── init/           # docker 首次启动的建扩展 SQL
 │   ├── data/               # 栅格读取层（阶段2 第4月 W2）
 │   │   └── cog_reader.py   # COG 在线读取封装（rio-tiler：瓦片 / 局部读取 / 8位渲染）
-│   └── rag/                # RAG 模块（第2月）
-│       ├── vector_store.py # 向量库封装（Chroma，cosine 空间，开发期）
-│       ├── vector_store_pg.py # 向量库封装（pgvector，第6月W1 生产版，同接口）
-│       ├── doc_processor.py # 文档处理（PDF/MD/HTML 抽取 + 递归切片）
-│       ├── retriever.py    # 混合检索（BM25 关键词 + 语义 + RRF 融合）
-│       ├── evaluation.py   # 检索评估指标（HitRate/Recall/MRR）
-│       └── data/           # 知识库种子数据 + 示例文档
-│           ├── gis_knowledge.json  # 22 条 GIS 知识 chunk
-│           ├── eval_dataset.json   # 12 条评估查询（含标注答案）
-│           └── docs/       # 示例文档（postgis_intro.md / ogc_wms.html）
+│   ├── rag/                # RAG 模块（第2月）
+│   │   ├── vector_store.py # 向量库封装（Chroma，cosine 空间，开发期）
+│   │   ├── vector_store_pg.py # 向量库封装（pgvector，第6月W1 生产版，同接口）
+│   │   ├── doc_processor.py # 文档处理（PDF/MD/HTML 抽取 + 递归切片）
+│   │   ├── retriever.py    # 混合检索（BM25 关键词 + 语义 + RRF 融合）
+│   │   ├── evaluation.py   # 检索评估指标（HitRate/Recall/MRR）
+│   │   └── data/           # 知识库种子数据 + 示例文档
+│   │       ├── gis_knowledge.json  # 22 条 GIS 知识 chunk
+│   │       ├── eval_dataset.json   # 12 条评估查询（含标注答案）
+│   │       └── docs/       # 示例文档（postgis_intro.md / ogc_wms.html）
+│   └── model_service/      # 第9月W2：模型推理服务（单例加载 + lazy load）
+│       ├── loader.py       # 单例模型加载器（get_unet/get_yolo/设备选择/路径安全校验）
+│       ├── segment.py      # U-Net 三分类分割服务（COG → mask PNG + 面积统计）
+│       ├── change.py       # 变化检测服务（postclass / spectral 两方法 + 转换矩阵）
+│       └── detect.py       # YOLOv8 船舶检测服务（bbox + 水/陆判定）
 ├── scripts/                # 各周交付物（可独立运行）
 │   ├── llm_basics.py       # W1：LLM 四个基础实验
 │   ├── prompt_test.py      # W2：5 模板实测（含 JSON 质量门禁）
@@ -294,6 +317,20 @@ python scripts/benchmark_w4.py                 # 第6月W4：全链路压测 + �
 .venv/bin/python scripts/change_detection.py --date-a 0 --date-b 1  # 短间隔 2019 vs 2020
 .venv/bin/python scripts/real_change_detection.py      # 第8月W2：真实时相对变化检测（2023 vs 2025 同 tile 49QGE，~30 秒）
 
+# 6.5 第9月W2：模型服务化（U-Net 分割 / 变化检测 / YOLO 检测 → HTTP API）
+.venv/bin/python -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000   # 起服务（模型首次请求 lazy 加载）
+# 四个端点（curl 直测；模型首次调用有 MPS 编译预热，属正常）：
+curl http://127.0.0.1:8000/api/model/health                     # {"device":"mps","loaded":{}}
+curl -X POST http://127.0.0.1:8000/api/model/segment \
+  -H "Content-Type: application/json" \
+  -d '{"cog": "szbay_real_20250727.tif"}'                       # mask PNG + 水/城/植面积统计
+curl -X POST http://127.0.0.1:8000/api/model/change \
+  -H "Content-Type: application/json" \
+  -d '{"cog_a": "szbay_real_20230708.tif", "cog_b": "szbay_real_20250727.tif", "method": "postclass"}'  # 变化占比 + 转换矩阵
+curl -X POST http://127.0.0.1:8000/api/model/detect \
+  -H "Content-Type: application/json" \
+  -d '{"cog": "szbay_real_20250727.tif"}'                       # 船舶 bbox 列表
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -319,6 +356,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 栅格处理 | rasterio + rio-cogeo | 栅格读写 / COG 转换（阶段2 第4月引入） |
 | 矢量分析 | GeoParquet + DuckDB Spatial | 列式空间分析，百万级秒查（阶段2 第5月引入） |
 | 遥感 AI | PyTorch（U-Net，从零手写） | 语义分割 W1：val mIoU 0.958（阶段3 第7月引入） |
+| 模型服务 | FastAPI + 单例加载器（MPS/CUDA/CPU） | 第9月W2：/api/model/* 推理端点（lazy load + 路径安全） |
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
 | Agent 框架 | LangGraph | 第3月引入（当前为手写主循环） |
 
@@ -337,5 +375,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第8月 W1** 合成时序变化检测（分类后比较 IoU 0.889 vs 光谱差分 0.394；多间隔变化率 36% 稳定=合成无累积性）
 - [x] **第8月 W2** 真实时相对变化检测（同 tile 49QGE 2023-07 vs 2025-07；U-Net vs 伪标签一致率 94.6%，深水稳定性自检 1.51% 翻城=W1 红旗① 补完）
 - [x] **第8月 W1** 变化检测（5 景合成时序 2019-2023；分类后比较 F1=0.941 完胜光谱差分 0.565；多间隔变化不增长 / 真实域差距演示；四层红旗已诚实标出）
-- [ ] **第8-9月** 变化检测 + 模型服务化
+- [x] **第9月 W2** 模型服务化（U-Net 分割/变化检测/YOLO 检测 → FastAPI `/api/model/*` 四端点；单例 lazy 加载 + MPS + base64 PNG 直出；实测 health/segment/change(11.87%)/detect(44 船) 全通）
+- [ ] **第9月 W3** 异步推理流水线（大影像异步分块推理）
+- [ ] **第9月 W4** 阶段3 集成：蓝藻监测系统原型
 - [ ] **第10-12月** 多 Agent + 自动制图 + 自动报告 + 端到端平台

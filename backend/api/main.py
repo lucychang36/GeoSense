@@ -6,21 +6,28 @@
 - 与 W1 的 chat_stream 一脉相承，只是从"命令行打印"变成了"HTTP 流式推送"。
 
 核心概念：接口分层
-- /api/chat   —— 对话接口（调用 LangGraph Agent，流式返回工具调用链 + 最终答案）
-- /api/poi    —— POI 数据接口（PostGIS 真实数据，前端底图聚合渲染用）
-- /            —— 静态前端（frontend/index.html）
+- /api/chat         —— 对话接口（调用 LangGraph Agent，流式返回工具调用链 + 最终答案）
+- /api/poi          —— POI 数据接口（PostGIS 真实数据，前端底图聚合渲染用）
+- /api/model/*      —— 第9月 W2：模型推理服务（U-Net 分割 / 变化检测 / YOLO 检测）
+- /                 —— 静态前端（frontend/index.html）
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..agent.graph import get_spatial_agent
 from ..core.config import PROJECT_ROOT, llm_config
+from ..model_service import (  # noqa: E402  （启动时不强 load，首次请求 lazy 加载）
+    change as msvc_change,
+    detect as msvc_detect,
+    list_loaded as msvc_list_loaded,
+    segment as msvc_segment,
+)
 
 app = FastAPI(title="GeoSense API", version="0.1.0")
 
@@ -165,5 +172,72 @@ async def _stream(query: str):
         yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
 
 
-# 前端静态文件
+# ============================================================
+# 第9月 W2：模型推理服务（U-Net 分割 / 变化检测 / YOLO 检测）
+# 设计：单例加载、路径安全、输出 base64 PNG → 前端可直接 <img src=...>
+# 注意：这些路由必须定义在 app.mount("/") 之前 —— Starlette 按注册顺序匹配，
+#       mount("/") 是 catch-all，若先注册会拦截所有 /api/* 请求（返回 404）。
+# ============================================================
+
+@app.get("/api/model/health")
+def model_health():
+    """健康检查：列出已加载模型 + 设备。模型按需 lazy load（首次请求时）。"""
+    return msvc_list_loaded()
+
+
+@app.post("/api/model/segment")
+async def model_segment(request: Request):
+    """U-Net 三分类（水/城/植）分割。Body: {"cog": "szbay_real_20250727.tif"}"""
+    body = await request.json()
+    cog = body.get("cog", "").strip()
+    weight = body.get("weight", "unet_finetuned.pt")
+    if not cog:
+        raise HTTPException(400, "cog 不能为空（应传入 data/cogs/ 下的文件名）")
+    try:
+        return msvc_segment.segment_cog(cog, weight=weight)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/model/change")
+async def model_change(request: Request):
+    """变化检测。Body: {"cog_a": "...", "cog_b": "...", "method": "postclass|spectral"}"""
+    body = await request.json()
+    cog_a = (body.get("cog_a") or "").strip()
+    cog_b = (body.get("cog_b") or "").strip()
+    method = body.get("method", "postclass")
+    weight = body.get("weight", "unet_finetuned.pt")
+    threshold = float(body.get("threshold", 0.08))
+    if not cog_a or not cog_b:
+        raise HTTPException(400, "cog_a / cog_b 都不能为空")
+    try:
+        return msvc_change.change_cog(cog_a, cog_b, method=method, weight=weight,
+                                      threshold=threshold)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/model/detect")
+async def model_detect(request: Request):
+    """YOLOv8 船舶检测。Body: {"cog": "...", "conf": 0.25, "imgsz": 1280}"""
+    body = await request.json()
+    cog = (body.get("cog") or "").strip()
+    weight = body.get("weight", "yolov8n_ship.pt")
+    conf = float(body.get("conf", 0.25))
+    imgsz = int(body.get("imgsz", 1280))
+    if not cog:
+        raise HTTPException(400, "cog 不能为空")
+    try:
+        return msvc_detect.detect_cog(cog, weight=weight, conf=conf, imgsz=imgsz)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# 前端静态文件（必须最后注册 —— catch-all，放在最后才不会拦截 /api/* 路由）
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
