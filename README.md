@@ -146,12 +146,13 @@
 > ⑤ **真实数据演示**：合成 2022 vs 真实 2025-07-27，光谱差分 247,607 像素 / 分类后 207,513 像素被判变化 → 几乎全图都是"伪变化"，纯域差距
 > 红旗：① 真实数据无时相对 ② 合成纹理"随机变化"≠真实地物变化 ③ 跨域光谱/分类错误会产生"双错抵消"假象
 
-**阶段3 第9月：模型服务化 + 异步推理（W2 完成）**
+**阶段3 第9月：模型服务化 + 异步推理（W3 完成）**
 
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 变化检测模型 | （学习计划 W1 为 Siamese 网络，已由第8月 W1/W2 的分类后比较 + 真实时相对检测覆盖） | ⏭ |
 | W2 | 模型服务化 | `backend/model_service/`（loader/segment/change/detect）+ `backend/api/main.py` 新增 `/api/model/*` 四个端点 | ✅ |
+| W3 | 异步推理 | `scripts/async_inference.py`（分块推理 + 任务队列）+ `backend/model_service/jobs.py` + `/api/model/jobs*` 异步端点 | ✅ |
 
 > **第9月 W2 关键数据**：把第7-8月训练好的三个模型（U-Net 分割 / U-Net 变化检测 / YOLOv8 检测）封装成 FastAPI 推理服务——
 > ① **单例加载器**（`loader.py`）：进程内只 load 一次跨请求复用，MPS（Apple GPU）显存友好；`get_device()` 自动 MPS > CUDA > CPU
@@ -163,6 +164,17 @@
 >    路由注册顺序坑（Starlette 按注册顺序匹配，`mount("/")` catch-all 必须先于 /api 路由之后注册，否则全 404）
 > ⚠ **诚实红旗**：① 同步推理（大影像整景推理时占用请求线程）② MPS 首次推理有编译预热 ③ 无鉴权/限流，仅限本地开发
 > 启动：`uvicorn backend.api.main:app --host 127.0.0.1 --port 8000`（模型首次请求 lazy 加载）
+
+> **第9月 W3 关键数据**：异步推理 —— 解决 W2 同步端点的两大痛点（整景大影像内存爆炸 + 分钟级推理拖死 HTTP 请求），拆成两个正交能力：
+> ① **分块推理**（`async_inference.py`）：rasterio `Window` 只读局部（不整景载入）→ 逐块 forward → 拼接；块间 64px overlap 补足 U-Net 感受野。
+>    一致性实测：真实 COG 77 万有效像素，分块 vs 整图单次 forward 一致率 **100.00%**（整图 0.21s / 分块 0.41s）；合成 4096×4096 4 波段 float32 整景 ≈268MB，分块后峰值内存与影像总大小**解耦**
+> ② **异步任务队列**（生产者-消费者 + job 状态机 `queued → running → done/error`）：提交即返回 job_id（秒回不阻塞），后台 worker 线程跑，`progress` = 已完成块/总块数供前端画进度条
+> ③ **依赖注入**：给 `AsyncQueue` 加 `model_factory` 注入点 —— 脚本演示任务内自 load 权重；FastAPI 服务注入 `loader.get_unet()` 进程单例（实测 health `loaded={"unet::unet_finetuned.pt":"UNet"}`，权重只 load 一次跨任务复用）
+> ④ **两个端点实测全通**：`POST /api/model/jobs`（segment 秒回 queued）→ `GET /api/model/jobs/{id}` 轮询 running progress 0→0.33→1.0 → done（水 16.39% / 城 34.48% / 植 49.13%，mask_png 88,808 字符 base64）；big_image 合成 2048×2048 = 16 tiles / 0.64s / peak_rss 580.8MB
+> ⑤ **安全与容错**：cog 走 `safe_cog_path` 白名单（`../` 越权被剥目录 → 404）、big_image 尺寸上限 8192、轮询带宽策略（done 前只回轻量字段，完成后才附大 base64）
+> ⑥ **核心概念**：生产者-消费者（`queue.Queue` 线程安全中转）、job 状态机、分块内存解耦、`overlap` 防接缝、依赖注入（同一套队列代码换模型来源）
+> ⚠ **诚实红旗**：① 分块重叠区仍有边界效应（边缘像素非 100% 一致）② 单 worker 串行（同时 10 个任务也排队）③ 内存队列进程重启即失（生产换 Celery + Redis broker 持久化，对外 API 不变）④ MPS 首次推理编译预热
+> 快速验证：`.venv/bin/python scripts/async_inference.py --tile 512`（全流程：一致性 + 队列 + 合成大图，~15s）
 
 ## 项目结构
 
@@ -201,11 +213,12 @@ GeoSense/
 │   │       ├── gis_knowledge.json  # 22 条 GIS 知识 chunk
 │   │       ├── eval_dataset.json   # 12 条评估查询（含标注答案）
 │   │       └── docs/       # 示例文档（postgis_intro.md / ogc_wms.html）
-│   └── model_service/      # 第9月W2：模型推理服务（单例加载 + lazy load）
+│   └── model_service/      # 第9月W2/3：模型推理服务（单例加载 + 异步任务队列）
 │       ├── loader.py       # 单例模型加载器（get_unet/get_yolo/设备选择/路径安全校验）
 │       ├── segment.py      # U-Net 三分类分割服务（COG → mask PNG + 面积统计）
 │       ├── change.py       # 变化检测服务（postclass / spectral 两方法 + 转换矩阵）
-│       └── detect.py       # YOLOv8 船舶检测服务（bbox + 水/陆判定）
+│       ├── detect.py       # YOLOv8 船舶检测服务（bbox + 水/陆判定）
+│       └── jobs.py         # 第9月W3：异步任务队列服务层（依赖注入单例 + 安全校验 + 轮询）
 ├── scripts/                # 各周交付物（可独立运行）
 │   ├── llm_basics.py       # W1：LLM 四个基础实验
 │   ├── prompt_test.py      # W2：5 模板实测（含 JSON 质量门禁）
@@ -239,6 +252,7 @@ GeoSense/
 │   └── yolo_detection.py   # 第7月 W4：YOLOv8 船舶检测（合成微调 + 真实域差距后置分析）
 │   ├── change_detection.py   # 第8月 W1：变化检测（光谱差分 vs 分类后比较 + 多间隔扫描 + 域差距演示）
 │   └── real_change_detection.py # 第8月 W2：真实时相对变化检测（49QGE 同 tile 对，0 GT 评估代理）
+│   └── async_inference.py   # 第9月 W3：异步推理（分块推理 Window+overlap + 任务队列 + 合成大图内存演示）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -331,6 +345,17 @@ curl -X POST http://127.0.0.1:8000/api/model/detect \
   -H "Content-Type: application/json" \
   -d '{"cog": "szbay_real_20250727.tif"}'                       # 船舶 bbox 列表
 
+# 6.6 第9月W3：异步推理（提交即返回 job_id，后台分块跑，轮询查进度）
+.venv/bin/python scripts/async_inference.py --tile 512         # 脚本全流程演示（一致性 + 队列 + 合成大图）
+# HTTP 异步任务（起 6.5 的服务后）：
+curl -X POST http://127.0.0.1:8000/api/model/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"task_type": "segment", "cog": "szbay_real_20250727.tif", "tile": 512}'  # 秒回 {job_id, status: queued}
+curl http://127.0.0.1:8000/api/model/jobs/job-0001             # 轮询：running progress 0→1 → done + 完整结果
+curl -X POST http://127.0.0.1:8000/api/model/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"task_type": "big_image", "size": 2048, "tile": 512}'   # 合成大影像内存演示（无真实数据依赖）
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -357,6 +382,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 矢量分析 | GeoParquet + DuckDB Spatial | 列式空间分析，百万级秒查（阶段2 第5月引入） |
 | 遥感 AI | PyTorch（U-Net，从零手写） | 语义分割 W1：val mIoU 0.958（阶段3 第7月引入） |
 | 模型服务 | FastAPI + 单例加载器（MPS/CUDA/CPU） | 第9月W2：/api/model/* 推理端点（lazy load + 路径安全） |
+| 异步推理 | queue.Queue + worker 线程 + rasterio Window | 第9月W3：分块推理（overlap=64）+ job 状态机 + 进度轮询（生产换 Celery+Redis） |
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
 | Agent 框架 | LangGraph | 第3月引入（当前为手写主循环） |
 
@@ -376,6 +402,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第8月 W2** 真实时相对变化检测（同 tile 49QGE 2023-07 vs 2025-07；U-Net vs 伪标签一致率 94.6%，深水稳定性自检 1.51% 翻城=W1 红旗① 补完）
 - [x] **第8月 W1** 变化检测（5 景合成时序 2019-2023；分类后比较 F1=0.941 完胜光谱差分 0.565；多间隔变化不增长 / 真实域差距演示；四层红旗已诚实标出）
 - [x] **第9月 W2** 模型服务化（U-Net 分割/变化检测/YOLO 检测 → FastAPI `/api/model/*` 四端点；单例 lazy 加载 + MPS + base64 PNG 直出；实测 health/segment/change(11.87%)/detect(44 船) 全通）
-- [ ] **第9月 W3** 异步推理流水线（大影像异步分块推理）
+- [x] **第9月 W3** 异步推理流水线（分块推理 Window+overlap 一致率 100.00% + 任务队列 queued→running→done + 依赖注入复用单例；实测 /api/model/jobs 提交秒回 + 轮询进度 + 合成大图 16 tiles/0.64s/内存解耦；四层红旗已诚实标出）
 - [ ] **第9月 W4** 阶段3 集成：蓝藻监测系统原型
 - [ ] **第10-12月** 多 Agent + 自动制图 + 自动报告 + 端到端平台

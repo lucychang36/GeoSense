@@ -25,6 +25,7 @@ from ..core.config import PROJECT_ROOT, llm_config
 from ..model_service import (  # noqa: E402  （启动时不强 load，首次请求 lazy 加载）
     change as msvc_change,
     detect as msvc_detect,
+    jobs as msvc_jobs,
     list_loaded as msvc_list_loaded,
     segment as msvc_segment,
 )
@@ -237,6 +238,42 @@ async def model_detect(request: Request):
         raise HTTPException(404, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ------------------------------------------------------------
+# 第9月 W3：异步推理任务队列 —— 提交即返回 job_id，后台线程分块跑，轮询查进度
+# 设计：POST /api/model/jobs 秒回 {job_id, status: queued}（不阻塞），
+#       前端轮询 GET /api/model/jobs/{id} 拿 progress（0~1）与最终 result。
+# 对比 W2 同步端点：影像小（700×1100）同步够用；整景 Sentinel-2（万级×万级）
+#       同步推理是分钟级 —— HTTP 请求会干等到超时，异步把「重活」挪到后台。
+# ------------------------------------------------------------
+
+@app.post("/api/model/jobs")
+async def model_submit_job(request: Request):
+    """提交异步任务。Body:
+      {"task_type": "segment", "cog": "szbay_real_20250727.tif", "tile": 512}
+      {"task_type": "big_image", "size": 2048, "tile": 512}   # 合成大影像内存演示
+    立即返回轻量 job 快照 —— 用 GET /api/model/jobs/{job_id} 轮询。
+    """
+    body = await request.json()
+    task_type = (body.get("task_type") or "").strip()
+    try:
+        return msvc_jobs.submit(task_type, body)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/model/jobs/{job_id}")
+def model_poll_job(job_id: str):
+    """轮询任务状态：queued → running → done / error。
+    done/error 前只回轻量字段；完成后附完整 result（含 stats + base64 PNG）。
+    """
+    job = msvc_jobs.poll(job_id)
+    if job is None:
+        raise HTTPException(404, f"job 不存在：{job_id}")
+    return job
 
 
 # 前端静态文件（必须最后注册 —— catch-all，放在最后才不会拦截 /api/* 路由）

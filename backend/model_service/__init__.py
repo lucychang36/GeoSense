@@ -20,4 +20,4 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 # 把子模块的常用符号提到包顶层，方便 from backend.model_service import ...
 from .loader import get_unet, get_yolo, get_device, list_loaded  # noqa: E402, F401
-from . import segment, change, detect  # noqa: E402, F401
+from . import segment, change, detect, jobs  # noqa: E402, F401
