@@ -165,11 +165,18 @@ class AsyncQueue:
     model_factory：依赖注入点 —— 脚本自包含演示传 None（任务内自 load 权重）；
     FastAPI 服务注入 model_service 的 get_unet() 单例（权重进程内只 load 一次，
     跨任务复用，见 backend/model_service/jobs.py）。队列/状态机/进度逻辑零改动。
+
+    task_executors：可注册任务执行器（task_type -> callable(job, model_factory)->dict）。
+    W4 加的扩展点 —— scripts 的 segment/big_image 仍走默认 hardcoded 分支；
+    FastAPI 服务注入自定义 task_type（如 cyanobacteria）走 executors。
+    _execute 优先查 executors，缺省回退默认分支。脚本默认行为不变。
     """
 
     def __init__(self, max_workers: int = 1,
-                 model_factory: Callable[[], tuple] | None = None):
+                 model_factory: Callable[[], tuple] | None = None,
+                 task_executors: dict[str, Callable] | None = None):
         self._model_factory = model_factory
+        self._task_executors = dict(task_executors or {})
         self._jobs: dict[str, Job] = {}
         self._lock = Lock()
         self._queue: Queue[Job] = Queue()
@@ -196,7 +203,14 @@ class AsyncQueue:
                 self._queue.task_done()
 
     def _execute(self, job: Job) -> dict:
-        """执行任务体（按类型分发）。真实的推理实现 —— 分块推理 + 进度回调。"""
+        """执行任务体：先查 executors 注入表，缺省走 segment/big_image 默认分支。
+
+        注入的 executor 签名 `fn(job, model_factory) -> dict`，负责把执行结果
+        序列化成 dict（numpy 转 list/标量、PIL 转 base64）。这是 W4 扩展点。
+        """
+        fn = self._task_executors.get(job.task_type)
+        if fn is not None:
+            return fn(job, self._model_factory)
         if job.task_type == "segment":
             if self._model_factory is not None:
                 model, device = self._model_factory()   # 服务注入：复用进程单例权重

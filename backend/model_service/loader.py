@@ -61,14 +61,19 @@ def safe_cog_path(rel_or_name: str) -> Path:
     - 接受纯文件名（如 "szbay_real_20250727.tif"）→ 直接拼到 COGS_DIR
     - 接受 "data/cogs/foo.tif" → 取文件名拼到 COGS_DIR（防 ../ 越权）
     - 任何解析出 COGS_DIR 之外的路径 → 抛 ValueError
-    - 文件不存在 → 抛 FileNotFoundError
+    - 文件不存在、是目录、空文件名 → 抛 FileNotFoundError / ValueError
+      （目录不能当 COG 读，缺字段会原样溜进队列后才在 worker 报错，违反"边界在服务入口"）
     """
     name = Path(rel_or_name).name  # 剥掉目录前缀，只取文件名
+    if not name:
+        raise ValueError("cog 文件名不能为空")
     target = (COGS_DIR / name).resolve()
     if not str(target).startswith(str(COGS_DIR.resolve())):
         raise ValueError(f"路径越权：{rel_or_name} 不在 data/cogs/ 下")
     if not target.exists():
         raise FileNotFoundError(f"COG 不存在：{target}")
+    if not target.is_file():
+        raise FileNotFoundError(f"不是有效 COG 文件（是目录）：{target}")
     return target
 
 

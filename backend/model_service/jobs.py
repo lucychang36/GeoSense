@@ -1,14 +1,17 @@
-"""第9月 W3：异步推理任务的 HTTP 服务层（进程级任务队列 + job 轮询）。
+"""第9月 W3/W4：异步推理任务的 HTTP 服务层（进程级任务队列 + job 轮询）。
 
 设计决策
 --------
 - 复用 scripts/async_inference.py 的 AsyncQueue（学习脚本已实现：生产者-消费者、
-  job 状态机、分块推理 + 进度回调），本模块只做两件事：
+  job 状态机、分块推理 + 进度回调），本模块做三件事：
     1. 依赖注入：把队列里的模型加载换成 model_service.get_unet() 进程单例。
        （scripts 里每个任务自 load 一次权重是「独立演示」；服务里权重必须
        只 load 一次跨任务复用 —— 这就是依赖注入的价值：队列逻辑零改动。）
     2. 安全边界：cog 文件名走 loader.safe_cog_path 白名单（防 ../ 越权）；
        big_image 合成尺寸设上限（防误传超大值把进程内存打爆）。
+    3. 任务扩展点（W4）：通过 AsyncQueue(task_executors=...) 注入新 task_type
+       的执行器 —— segments/big_image 是脚本默认分支；cyanobacteria 走注入。
+       注入 dict 让新增任务类型不用改 AsyncQueue 内部（开放-封闭）。
 
 生产升级路径（scripts docstring 已述）：AsyncQueue → Celery + Redis broker，
 对外 API（submit / poll）不变 —— 接口屏蔽实现，与 W2 的 VectorStore 同一哲学。
@@ -22,6 +25,7 @@ from typing import Any
 # 真实模型加载发生在 worker 执行任务那一刻（lazy），与 model_service 哲学一致。
 from scripts.async_inference import AsyncQueue  # noqa: E402
 
+from . import cyanobacteria as msvc_cyano  # noqa: E402
 from .loader import get_device, get_unet, safe_cog_path  # noqa: E402
 
 _queue: AsyncQueue | None = None
@@ -43,7 +47,11 @@ def get_queue() -> AsyncQueue:
     global _queue
     with _lock:
         if _queue is None:
-            _queue = AsyncQueue(max_workers=1, model_factory=_svc_model_factory)
+            _queue = AsyncQueue(
+                max_workers=1,
+                model_factory=_svc_model_factory,
+                task_executors={"cyanobacteria": msvc_cyano.cyano_executor},
+            )
     return _queue
 
 
@@ -63,8 +71,16 @@ def submit(task_type: str, args: dict) -> dict:
         if size > _MAX_SIZE or tile not in _ALLOWED_TILES:
             raise ValueError(f"size ≤ {_MAX_SIZE}，tile ∈ {_ALLOWED_TILES}，收到 size={size} tile={tile}")
         args["size"], args["tile"] = size, tile
+    elif task_type == "cyanobacteria":
+        # 两景 COG 同名校验：白名单 + 存在性都前置到提交时（与 segment 一致），
+        # 避免排到 worker 才报 4xx —— 用户体验更好，也避免占队列槽位
+        cog_a = safe_cog_path(args.get("cog_a", ""))
+        cog_b = safe_cog_path(args.get("cog_b", ""))
+        args["cog_a"], args["cog_b"] = cog_a.name, cog_b.name
     else:
-        raise ValueError(f"task_type 仅支持 segment | big_image，收到：{task_type!r}")
+        raise ValueError(
+            f"task_type 仅支持 segment | big_image | cyanobacteria，收到：{task_type!r}"
+        )
 
     queue = get_queue()
     job_id = queue.submit(task_type, args)

@@ -146,13 +146,14 @@
 > ⑤ **真实数据演示**：合成 2022 vs 真实 2025-07-27，光谱差分 247,607 像素 / 分类后 207,513 像素被判变化 → 几乎全图都是"伪变化"，纯域差距
 > 红旗：① 真实数据无时相对 ② 合成纹理"随机变化"≠真实地物变化 ③ 跨域光谱/分类错误会产生"双错抵消"假象
 
-**阶段3 第9月：模型服务化 + 异步推理（W3 完成）**
+**阶段3 第9月：模型服务化 + 异步推理（W4 完成）**
 
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 变化检测模型 | （学习计划 W1 为 Siamese 网络，已由第8月 W1/W2 的分类后比较 + 真实时相对检测覆盖） | ⏭ |
 | W2 | 模型服务化 | `backend/model_service/`（loader/segment/change/detect）+ `backend/api/main.py` 新增 `/api/model/*` 四个端点 | ✅ |
 | W3 | 异步推理 | `scripts/async_inference.py`（分块推理 + 任务队列）+ `backend/model_service/jobs.py` + `/api/model/jobs*` 异步端点 | ✅ |
+| W4 | 阶段3集成项目 | `scripts/cyanobacteria_monitor.py`（蓝藻监测）+ `backend/model_service/cyanobacteria.py` + AsyncQueue `task_executors` 扩展点 | ✅ |
 
 > **第9月 W2 关键数据**：把第7-8月训练好的三个模型（U-Net 分割 / U-Net 变化检测 / YOLOv8 检测）封装成 FastAPI 推理服务——
 > ① **单例加载器**（`loader.py`）：进程内只 load 一次跨请求复用，MPS（Apple GPU）显存友好；`get_device()` 自动 MPS > CUDA > CPU
@@ -175,6 +176,16 @@
 > ⑥ **核心概念**：生产者-消费者（`queue.Queue` 线程安全中转）、job 状态机、分块内存解耦、`overlap` 防接缝、依赖注入（同一套队列代码换模型来源）
 > ⚠ **诚实红旗**：① 分块重叠区仍有边界效应（边缘像素非 100% 一致）② 单 worker 串行（同时 10 个任务也排队）③ 内存队列进程重启即失（生产换 Celery + Redis broker 持久化，对外 API 不变）④ MPS 首次推理编译预热
 > 快速验证：`.venv/bin/python scripts/async_inference.py --tile 512`（全流程：一致性 + 队列 + 合成大图，~15s）
+
+> **第9月 W4 关键数据**：蓝藻监测系统原型（阶段3 集成项目）—— 把第7-9月所有能力收口成一个真实业务场景：输入两期深圳湾 Sentinel-2 真实 COG，输出「水体范围 + 疑似藻华风险区 + 两期变化 + 总览图」。
+> ① **算法链路**：valid/云掩膜（W8 约定）→ U-Net 水体（复用 W2 `unet_finetuned.pt`）→ NDWI 独立交叉验证（质量计，82%/80% 一致率）→ 水体内 NIR 抬升稳健异常检测 → 双条件 Level1（z>2.5）/ Level2（追加 NDVI>0 红光吸收佐证）
+> ② **代理指标诚实声明**：无红边 B5/B6/SWIR（COG 仅 B2/B3/B4/B8）→ 标准 CI-cyano/NDCI/FAI 都做不了；用 NIR 抬升 + 红光吸收做**水色异常初筛**，不是定量叶绿素，悬浮泥沙无法排除
+> ③ **实测结果**（2023-07-08 vs 2025-07-27）：水体 13.59 km² vs 14.06 km²；Level2 疑似藻华 0.018 km² vs 0.176 km²（**10 倍差**，方向与夏季水华高发一致）；两期变化（无云交集）：新增 0.073 km² / 消退 0.008 km² / 净增 +0.065 km²
+> ④ **阶段3 集成架构**：`AsyncQueue` 加 `task_executors` 注入点（开放-封闭：scripts 默认 segment/big_image 不变；服务注入 `{"cyanobacteria": executor}` 扩展新 task_type）→ POST `/api/model/jobs` 提交秒回 → 轮询 progress 0→0.5→1.0 → done 返回 stats_a/b + delta + png_b64（~1MB 总览图）+ 落盘 `data/output/cyano_jobs/`
+> ⑤ **核心概念**：集成（既有件拼业务）、稳健统计（median/MAD 抗离群）、双证据交叉（U-Net vs NDWI 独立判水体）、代理指标（先圈风险区再验证）、时相对比陷阱（无云交集防伪变化）
+> ⑥ **修复**：`safe_cog_path` 补 `is_dir`/空串校验 → 缺字段/空 cog 立即 400（之前会返回 200 溜进队列 worker 才报错，违反"边界在服务入口"原则）
+> ⚠ **W4 诚实红旗**：① 无红边波段 → 输出是"水色异常初筛"非藻华浓度定量 ② 浑浊湾泥沙假阳性风险（需红边 + 实地叶绿素验证） ③ 无地面真值 → 启发式阈值需按水域调 ④ 跨年季相/潮汐/大气差异（已在无云交集上部分缓解）⑤ 2023 景云 27.5% 漏检不可避免
+> 快速验证：`.venv/bin/python scripts/cyanobacteria_monitor.py`（脚本独立全流程，~5s）
 
 ## 项目结构
 
@@ -213,12 +224,13 @@ GeoSense/
 │   │       ├── gis_knowledge.json  # 22 条 GIS 知识 chunk
 │   │       ├── eval_dataset.json   # 12 条评估查询（含标注答案）
 │   │       └── docs/       # 示例文档（postgis_intro.md / ogc_wms.html）
-│   └── model_service/      # 第9月W2/3：模型推理服务（单例加载 + 异步任务队列）
+│   └── model_service/      # 第9月W2/3/4：模型推理服务（单例加载 + 异步任务队列 + 业务任务）
 │       ├── loader.py       # 单例模型加载器（get_unet/get_yolo/设备选择/路径安全校验）
 │       ├── segment.py      # U-Net 三分类分割服务（COG → mask PNG + 面积统计）
 │       ├── change.py       # 变化检测服务（postclass / spectral 两方法 + 转换矩阵）
 │       ├── detect.py       # YOLOv8 船舶检测服务（bbox + 水/陆判定）
-│       └── jobs.py         # 第9月W3：异步任务队列服务层（依赖注入单例 + 安全校验 + 轮询）
+│       ├── jobs.py         # 第9月W3：异步任务队列服务层（依赖注入单例 + 安全校验 + 轮询 + task_executors 扩展点）
+│       └── cyanobacteria.py # 第9月W4：蓝藻监测任务执行器（注入 AsyncQueue.task_executors）
 ├── scripts/                # 各周交付物（可独立运行）
 │   ├── llm_basics.py       # W1：LLM 四个基础实验
 │   ├── prompt_test.py      # W2：5 模板实测（含 JSON 质量门禁）
@@ -253,6 +265,7 @@ GeoSense/
 │   ├── change_detection.py   # 第8月 W1：变化检测（光谱差分 vs 分类后比较 + 多间隔扫描 + 域差距演示）
 │   └── real_change_detection.py # 第8月 W2：真实时相对变化检测（49QGE 同 tile 对，0 GT 评估代理）
 │   └── async_inference.py   # 第9月 W3：异步推理（分块推理 Window+overlap + 任务队列 + 合成大图内存演示）
+│   └── cyanobacteria_monitor.py # 第9月 W4：蓝藻监测原型（U-Net 水体 + NIR 抬升藻华代理 + 两期对比）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -356,6 +369,17 @@ curl -X POST http://127.0.0.1:8000/api/model/jobs \
   -H "Content-Type: application/json" \
   -d '{"task_type": "big_image", "size": 2048, "tile": 512}'   # 合成大影像内存演示（无真实数据依赖）
 
+# 6.7 第9月W4：蓝藻监测原型（阶段3 集成项目）
+.venv/bin/python scripts/cyanobacteria_monitor.py               # 脚本独立全流程（真实两期 ~5s）
+# HTTP 异步任务（起 6.5 的服务后）：
+curl -X POST http://127.0.0.1:8000/api/model/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"task_type": "cyanobacteria", "cog_a": "szbay_real_20230708.tif", "cog_b": "szbay_real_20250727.tif"}'  # 秒回 queued
+curl http://127.0.0.1:8000/api/model/jobs/job-0001             # 轮询：progress 0→0.5→1.0 → done + stats_a/b + delta + png_b64
+# 错误分支（边界在服务入口）：
+curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/json' -d '{"task_type":"cyanobacteria","cog_a":"nope.tif","cog_b":"x"}'  # 404
+curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/json' -d '{"task_type":"cyanobacteria","cog_a":""}'                   # 400
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -383,6 +407,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 遥感 AI | PyTorch（U-Net，从零手写） | 语义分割 W1：val mIoU 0.958（阶段3 第7月引入） |
 | 模型服务 | FastAPI + 单例加载器（MPS/CUDA/CPU） | 第9月W2：/api/model/* 推理端点（lazy load + 路径安全） |
 | 异步推理 | queue.Queue + worker 线程 + rasterio Window | 第9月W3：分块推理（overlap=64）+ job 状态机 + 进度轮询（生产换 Celery+Redis） |
+| 业务任务扩展 | AsyncQueue.task_executors 注入点 | 第9月W4：cyanobacteria 服务（U-Net 水体 + NIR 抬升稳健异常 + 双期对比），新增 task_type 不改 AsyncQueue 内部 |
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
 | Agent 框架 | LangGraph | 第3月引入（当前为手写主循环） |
 
@@ -403,5 +428,5 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第8月 W1** 变化检测（5 景合成时序 2019-2023；分类后比较 F1=0.941 完胜光谱差分 0.565；多间隔变化不增长 / 真实域差距演示；四层红旗已诚实标出）
 - [x] **第9月 W2** 模型服务化（U-Net 分割/变化检测/YOLO 检测 → FastAPI `/api/model/*` 四端点；单例 lazy 加载 + MPS + base64 PNG 直出；实测 health/segment/change(11.87%)/detect(44 船) 全通）
 - [x] **第9月 W3** 异步推理流水线（分块推理 Window+overlap 一致率 100.00% + 任务队列 queued→running→done + 依赖注入复用单例；实测 /api/model/jobs 提交秒回 + 轮询进度 + 合成大图 16 tiles/0.64s/内存解耦；四层红旗已诚实标出）
-- [ ] **第9月 W4** 阶段3 集成：蓝藻监测系统原型
+- [x] **第9月 W4** 阶段3集成：蓝藻监测系统原型（深圳湾 2023-07 vs 2025-07 真实 COG；U-Net 水体 + NDWI 一致率 82/80% + 水体内 NIR 抬升稳健异常代理检测；L2 疑似藻华 0.018→0.176 km² 10 倍差；任务执行器注入 AsyncQueue.task_executors 扩展点；五层红旗已诚实标出）
 - [ ] **第10-12月** 多 Agent + 自动制图 + 自动报告 + 端到端平台
