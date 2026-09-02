@@ -187,6 +187,24 @@
 > ⚠ **W4 诚实红旗**：① 无红边波段 → 输出是"水色异常初筛"非藻华浓度定量 ② 浑浊湾泥沙假阳性风险（需红边 + 实地叶绿素验证） ③ 无地面真值 → 启发式阈值需按水域调 ④ 跨年季相/潮汐/大气差异（已在无云交集上部分缓解）⑤ 2023 景云 27.5% 漏检不可避免
 > 快速验证：`.venv/bin/python scripts/cyanobacteria_monitor.py`（脚本独立全流程，~5s）
 
+**阶段4 第10月：多 Agent 协作 + 自动制图 🚧（W1 完成）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | 多 Agent 架构设计 | `backend/agent/multi_agent/`（state/agents/graph/__init__ 4 文件）+ `scripts/multi_agent_demo.py` | ✅ |
+| W2 | 自动符号化引擎 | （学习计划：`auto_symbology.py` 根据数据类型自动配色） | ⏭ |
+| W3 | 自动标注 + 地图综合 | （学习计划：`auto_cartography.py` 完整制图流水线） | ⏭ |
+| W4 | Text-to-Map 原型 | （学习计划：`text_to_map.py` 自然语言→Mapbox 样式 JSON） | ⏭ |
+
+> **第10月 W1 关键数据**：多 Agent 架构设计 —— 4 Agent + Supervisor 的 LangGraph 协作链路，打通「自然语言问题 → 分工执行 → 集中汇总」。
+> ① **角色分工**：Planner（LLM 拆解用户问题 → 结构化 JSON 计划，temperature=0）/ Data（从 `data/cogs/` 选时相对 COG）/ Analysis（复用第8月 W2 `spectral_diff_change` 变化检测）/ Cartography（3 面板 matplotlib PNG 落盘 `data/output/multi_agent_maps/`）/ Supervisor（集中汇总 final_answer）
+> ② **架构要点**：LangGraph StateGraph + TypedDict **共享状态**（plan/cog_a/cog_b/analysis_result/map_path/step_log，`total=False` 只更新关心的字段）—— 节点间不靠 messages 隐式传递（与 AutoGen/CrewAI 消息总线的关键区别）→ 状态显式 = 可观测 / 可检查点 / 可回滚；W1 简化为线性顺序边 `planner→data→analysis→cartography→supervisor→END`，「supervisor 模式」的精神 = 一个集中节点汇总，避免 worker 各自回话造成上下文碎片化
+> ③ **失败兜底**：Planner LLM 调用失败 → 规则回退（正则提年份 ≥2 个 → temporal_change）；任意 worker 抛错 → `analysis_error` 携带异常 → supervisor 输出用户可见失败原因（demo 永不卡死）
+> ④ **实测**（默认 query「对比深圳湾 2023-07 和 2025-07 的水域变化并出图」）：Planner LLM 拆解 task_type=temporal_change → Data 兜底选 49QGE 日期 COG（`szbay_real_20230708.tif` / `szbay_real_20250727.tif`，含 8 位日期校验剔除 mosaic）→ Analysis spectral_diff 变化占比 **67.64%**（与第8月 W2 baseline 67.6% 吻合，方法复用成立）→ Cartography 3 面板 PNG **543KB** → Supervisor 汇总；**4 步 / 4.82s**
+> ⑤ **data 选择坑**：cogs/ 目录含合成图 `szbay_real_mosaic.tif`（文件名无 8 位日期）→ data_node 用 `_date8` 正则要求 8 位连续数字，否则 mosaic 会被 `_year_floor` 判成最早日期误选
+> ⚠ **诚实红旗**：① **何时不要多 Agent**：单步任务（如「查深圳 POI」）单 Agent 足够，多 Agent 徒增 LLM 调用 / 状态字段 / 调试复杂度 ② 规则回退只是兜底不是修复 —— LLM 拆不出的任务，正则只能猜 ③ W1 线性顺序 + worker 全是确定性纯函数（非 ReAct sub-agent）：无动态路由、worker 不调 LLM 选工具，是「编排」不是「自治」④ 依赖 data/cogs/ 现有真实 COG 对，无数据时 Data Agent 兜底失败
+> 快速验证：`.venv/bin/python scripts/multi_agent_demo.py`（需 DEEPSEEK_API_KEY，~5s）
+
 ## 项目结构
 
 ```
@@ -266,6 +284,7 @@ GeoSense/
 │   └── real_change_detection.py # 第8月 W2：真实时相对变化检测（49QGE 同 tile 对，0 GT 评估代理）
 │   └── async_inference.py   # 第9月 W3：异步推理（分块推理 Window+overlap + 任务队列 + 合成大图内存演示）
 │   └── cyanobacteria_monitor.py # 第9月 W4：蓝藻监测原型（U-Net 水体 + NIR 抬升藻华代理 + 两期对比）
+│   └── multi_agent_demo.py   # 第10月 W1：多 Agent 协作端到端 demo（4 Agent + Supervisor + --trace 逐步看 state）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -380,6 +399,11 @@ curl http://127.0.0.1:8000/api/model/jobs/job-0001             # 轮询：progre
 curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/json' -d '{"task_type":"cyanobacteria","cog_a":"nope.tif","cog_b":"x"}'  # 404
 curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/json' -d '{"task_type":"cyanobacteria","cog_a":""}'                   # 400
 
+# 6.8 第10月W1：多 Agent 协作（4 Agent + Supervisor；需 DEEPSEEK_API_KEY）
+.venv/bin/python scripts/multi_agent_demo.py                              # 默认 query：深圳湾 2023-07 vs 2025-07 水域变化出图
+.venv/bin/python scripts/multi_agent_demo.py "深圳湾 2023-07 和 2025-07 有什么变化"  # 自定义问题（Planner LLM 拆解）
+.venv/bin/python scripts/multi_agent_demo.py --trace                     # 逐节点打印 state 变化（plan/cog_a/analysis_result/map_path）
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -409,7 +433,8 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 异步推理 | queue.Queue + worker 线程 + rasterio Window | 第9月W3：分块推理（overlap=64）+ job 状态机 + 进度轮询（生产换 Celery+Redis） |
 | 业务任务扩展 | AsyncQueue.task_executors 注入点 | 第9月W4：cyanobacteria 服务（U-Net 水体 + NIR 抬升稳健异常 + 双期对比），新增 task_type 不改 AsyncQueue 内部 |
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
-| Agent 框架 | LangGraph | 第3月引入（当前为手写主循环） |
+| Agent 框架 | LangGraph | 第3月引入（ReAct / 多工具 / 手写 StateGraph 工作流） |
+| 多 Agent 编排 | LangGraph StateGraph + TypedDict 共享状态 | 第10月W1：4 Agent + Supervisor（planner→data→analysis→cartography→supervisor；LLM 拆解 + 确定性 worker + 失败兜底；非消息总线 = 可观测可回滚） |
 
 ## 里程碑
 
@@ -429,4 +454,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第9月 W2** 模型服务化（U-Net 分割/变化检测/YOLO 检测 → FastAPI `/api/model/*` 四端点；单例 lazy 加载 + MPS + base64 PNG 直出；实测 health/segment/change(11.87%)/detect(44 船) 全通）
 - [x] **第9月 W3** 异步推理流水线（分块推理 Window+overlap 一致率 100.00% + 任务队列 queued→running→done + 依赖注入复用单例；实测 /api/model/jobs 提交秒回 + 轮询进度 + 合成大图 16 tiles/0.64s/内存解耦；四层红旗已诚实标出）
 - [x] **第9月 W4** 阶段3集成：蓝藻监测系统原型（深圳湾 2023-07 vs 2025-07 真实 COG；U-Net 水体 + NDWI 一致率 82/80% + 水体内 NIR 抬升稳健异常代理检测；L2 疑似藻华 0.018→0.176 km² 10 倍差；任务执行器注入 AsyncQueue.task_executors 扩展点；五层红旗已诚实标出）
-- [ ] **第10-12月** 多 Agent + 自动制图 + 自动报告 + 端到端平台
+- [x] **第10月 W1** 多 Agent 架构设计（4 Agent + Supervisor LangGraph StateGraph：Planner LLM 拆解 + Data/Analysis/Cartography 确定性 worker + Supervisor 集中汇总；共享 State 非消息总线；Planner 失败规则回退；实测 67.64% 与第8月 baseline 吻合 / 4 步 4.82s / 3 面板专题图 543KB；红旗：何时不要多 Agent + 线性简化已标出）
+- [ ] **第10月 W2-W4** 自动符号化引擎 / 自动标注+地图综合 / Text-to-Map
+- [ ] **第11-12月** 自动报告生成 + 端到端平台
