@@ -81,6 +81,57 @@
 > **第6月 W4 压测关键发现**：① 连接池（psycopg_pool）让 pgvector 检索 144ms→18.6ms（8×）；
 > ② PostGIS `poi` 表缺空间索引，按区统计 2.4s→217ms（11×），`poi_geom_gix`（GIST）已补进 schema.py。
 
+**阶段3 第7月：遥感 AI 模型 🚧（W1 完成）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | U-Net 语义分割模型搭建 | `scripts/unet_segmentation.py`：从零手写 U-Net，深圳湾水/城/植三分类 + 整景滑窗推理 | ✅ |
+| W2 | 完整训练流水线（合成预训练 + 真实微调） | `scripts/train_segmentation.py`：NDWI/NDVI 伪标签 + 混合微调 | ✅ |
+| W3 | SAM 遥感零样本对象级分割 | `scripts/sam_geo.py`：SAM vit-base + 光谱平均贴语义 vs W2 对比 | ✅ |
+| W4 | YOLOv8 船舶目标检测 | `scripts/yolo_detection.py`：COCO 零样本测试 + 合成微调（120 训练/30 验证/40 epochs）+ 真实 mosaic 域差距后置分析 | ✅ |
+
+**阶段3 第8月：变化检测（W1 ✅）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | 变化检测（光谱差分 vs 分类后比较） | `scripts/change_detection.py`：5 景合成时序（2019-2023）+ 真实 2025-07-27 域差距演示 | ✅ |
+
+> **第7月 W1 关键数据**：U-Net（base=16，4 层编/解码，194 万参数），80 景合成训练（程序化真值）/ 20 景验证，
+> 20 epochs 收敛 **val mIoU=0.958**（water 0.994 / urban 0.941 / vegetation 0.940）。
+> 数据：内联复用 `satellite_download.py` 物理模型生成带真值的合成场景（无标注数据问题用程序化真值解决）。
+> 推理：滑窗重叠（256/128）支持任意尺寸整景，已对合成 COG `szbay_2022-06.tif` 和真实 Sentinel-2 mosaic 都跑过。
+> 权重：`data/models/unet_szbay.pt`；`--infer-only` 一键复现推理。
+>
+> **第7月 W2 关键数据**：两阶段迁移学习（15 合成预训练 + 10 真实微调）—— 合成 val mIoU
+> 0.960 → 0.951（**灾难性遗忘仅 -0.009**），真实伪标签代理 mIoU 0.501 → **0.927**（**+0.425**）。
+> 三类提升：water 0.064 → 0.927、urban 0.578 → 0.900、vegetation 0.863 → 0.953。
+> 关键：W1 暴露的"水被预测为 urban"红旗完全解决（+0.863）。
+> 伪标签生成：NDWI>0.05 → 水、NDWI≤0.05 & NDVI>0.3 → 植、否则城，云/NoData → ignore。
+> 权重：`data/models/unet_pretrain.pt` + `data/models/unet_finetuned.pt`。
+>
+> **第7月 W3 关键数据**：SAM vit-base（transformers，9370 万参数）在真实 mosaic 上零样本分割出
+> **232 个对象**（15 块 × 4×4 网格点提示），每对象按 NDWI/NDVI 平均贴语义得到对象级伪标签。
+> W2 阈值 vs W3 SAM 伪标签总一致率 **70.1%**（water 84.8% / urban 41.7% / vegetation 85.0%）。
+> W3 植被更聚合（55.6% vs 40.7%），城市更块状（边界贴合 SAM 轮廓），像素碎片明显少于 W2。
+> 已诚实标三层红旗：① 块边界断裂（块间对象被切断）② SAM 仅真彩色 RGB 输入（NIR 丢失）③ 语义靠光谱平均仍受 NDWI/NDVI 阈值上限。
+>
+> **第7月 W4 关键数据**：YOLOv8n（3.2M 参数）+ ultralytics 8.4 训练管线。
+> 合成数据集：`data/ships_synth/`，120 训练 / 30 验证，640×640 patch，每图 3-8 艘高反射旋转椭圆船（含尾迹），
+> 船长 10-45px（10m/像素 → 100-450m 中大型船舶）。
+> ① **COCO 零样本**在真实 mosaic 上 **0 船检测**（COCO-8）—— 完美的域差距证据
+> ② **合成 val**：mAP50 = **0.985**（P 0.997 / R 0.989）/ mAP50:95 = 0.871 —— 合成域内表现极佳
+> ③ **真实 mosaic**：检出 105 框 / 6 在水上 86 在陆地 13 混合（**水上仅 5.7%**）/ 细长框（aspect>2.5）仅 5 个
+> 红旗：① COCO 自然影像 → 卫星域差距 ② 10m 分辨率下渔船仅 1-3px 不可检 ③ 合成水纹"网格暗背景"vs 真实"平滑水/城市纹理"导致大量误检
+> 权重：`data/models/yolov8n_ship.pt`（best.pt 拷贝）+ `data/models/yolov8n_coco.pt`（COCO 预训练）+ `data/models/yolo_runs/ship/`（训练产物）。
+>
+> **第8月 W1 关键数据**：5 景合成深圳湾时序（2019-2023 每年 6 月，512×512）按 SEED=42 同种子序贯重算（与 `satellite_download.py` 主流程一致）→ 已知 GT。
+> ① **光谱差分 baseline**（|ΔNDVI| + |ΔNDWI| > 0.08）：IoU 0.394 / P 0.395 / **R 0.988**（过度检测）/ F1 0.565
+> ② **分类后比较**（W1 unet_szbay.pt）：IoU **0.889** / P 0.941 / R 0.941 / **F1 0.941**（完胜 baseline）
+> ③ **多间隔扫描**（2019→2020/2021/2022/2023）：变化占比稳定在 36.0%——**不随时间增长**！syn_scene 每景纹理独立随机采样，无累积性，与真实场景的"年增长"截然不同
+> ④ **转换矩阵**：海岸线 100% 固定（水→水 72,797 / 水→城 0 / 水→植 0），所有变化都集中在城↔植翻转（46,972 + 47,367）
+> ⑤ **真实数据演示**：合成 2022 vs 真实 2025-07-27，光谱差分 247,607 像素 / 分类后 207,513 像素被判变化 → 几乎全图都是"伪变化"，纯域差距
+> 红旗：① 真实数据无时相对 ② 合成纹理"随机变化"≠真实地物变化 ③ 跨域光谱/分类错误会产生"双错抵消"假象
+
 ## 项目结构
 
 ```
@@ -144,7 +195,12 @@ GeoSense/
 │   ├── duckdb_spatial.py  # 第5月 W3：DuckDB 空间查询 + 百万级基准
 │   ├── data_pipeline.py   # 第5月 W4：STAC 检索 → COG 读取 → NDVI（统计用原始值，出图前高斯平滑）
 │   ├── migrate_vectorstore.py # 第6月 W1：Chroma → pgvector 迁移 + 一致性验证
-│   └── benchmark_w4.py    # 第6月 W4：全链路压测 + 阶段2 验收报告
+│   ├── benchmark_w4.py    # 第6月 W4：全链路压测 + 阶段2 验收报告
+│   └── unet_segmentation.py # 第7月 W1：U-Net 语义分割（程序化真值 + 滑窗整景推理 + 两层域差距红旗）
+│   └── train_segmentation.py # 第7月 W2：合成预训练 + NDWI/NDVI 伪标签 + 真实微调（迁移学习）
+│   └── sam_geo.py          # 第7月 W3：SAM 零样本对象级伪标签（vit-base + 光谱平均 + W2 对比）
+│   └── yolo_detection.py   # 第7月 W4：YOLOv8 船舶检测（合成微调 + 真实域差距后置分析）
+│   └── change_detection.py # 第8月 W1：变化检测（光谱差分 vs 分类后比较 + 多间隔扫描 + 域差距演示）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -213,6 +269,15 @@ python scripts/migrate_vectorstore.py          # Chroma → pgvector + 检索一
 python scripts/rag_chain.py --backend pgvector # 第6月W2：RAG 链路一行切换 pgvector（默认 chroma）
 python scripts/benchmark_w4.py                 # 第6月W4：全链路压测 + 阶段2 验收报告
 
+# 6. 阶段3 第7月 W1：U-Net 语义分割（需 torch 2.x，CPU/MPS 均可）
+.venv/bin/python scripts/unet_segmentation.py         # 训练 80 景 + 验证 + 整景推理（~1 分钟）
+.venv/bin/python scripts/unet_segmentation.py --infer-only  # 加载权重 data/models/unet_szbay.pt 复现推理
+.venv/bin/python scripts/train_segmentation.py          # W2：合成预训练 15 ep + 真实微调 10 ep（~2 分钟）
+.venv/bin/python scripts/sam_geo.py --n-grid 4         # W3：SAM vit-base 零样本对象级分割（首次下载 ~375MB）
+.venv/bin/python scripts/yolo_detection.py              # W4：YOLOv8 船舶检测（120 训练/30 验证/40 ep + 真实域差距分析，~6 分钟）
+.venv/bin/python scripts/change_detection.py            # 第8月W1：变化检测（默认 2019 vs 2023，~20 秒）
+.venv/bin/python scripts/change_detection.py --date-a 0 --date-b 1  # 短间隔 2019 vs 2020
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -237,6 +302,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 空间数据库 | PostgreSQL 16 + PostGIS 3.4 | 空间查询 / SQL 生成执行（阶段1 补课引入） |
 | 栅格处理 | rasterio + rio-cogeo | 栅格读写 / COG 转换（阶段2 第4月引入） |
 | 矢量分析 | GeoParquet + DuckDB Spatial | 列式空间分析，百万级秒查（阶段2 第5月引入） |
+| 遥感 AI | PyTorch（U-Net，从零手写） | 语义分割 W1：val mIoU 0.958（阶段3 第7月引入） |
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
 | Agent 框架 | LangGraph | 第3月引入（当前为手写主循环） |
 
@@ -248,5 +314,10 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第3月** ReAct Agent、多工具空间分析、流式输出、前端界面
 - [x] **补课** PostGIS SQL 生成 + 只读安全校验 + OSM 真实数据（10 区边界 + 3000+ POI）+ 前端地图可视化
 - [x] **第4-6月** 空间大数据 + 生产化（第4月 ✅ COG 全链路；第5月 ✅ STAC/GeoParquet/DuckDB/端到端流水线；第6月 ✅ pgvector 迁移+容器化+压测验收：检索 18.6ms / 空间查询 217ms / 500万点 817ms）
-- [ ] 第7-9月 遥感 AI（分割/检测/变化检测）+ 模型服务化
-- [ ] 第10-12月 多 Agent + 自动制图 + 自动报告 + 端到端平台
+- [x] **第7月 W1** U-Net 语义分割（val mIoU 0.958，权重可复现；两层域差距已诚实标出）
+- [x] **第7月 W2** 完整训练流水线（合成预训练 + NDWI/NDVI 伪标签 + 真实微调；真实伪标签 mIoU 0.501→0.927，灾难性遗忘仅 -0.009）
+- [x] **第7月 W3** SAM 零样本对象级分割（232 对象，与 W2 一致率 70.1%；三层红旗已诚实标出）
+- [x] **第7月 W4** YOLOv8 船舶检测（合成 val mAP50=0.985；COCO 零样本 0 船 / 真实 mosaic 105 框仅 5.7% 在水上；三层红旗已诚实标出）
+- [x] **第8月 W1** 变化检测（5 景合成时序 2019-2023；分类后比较 F1=0.941 完胜光谱差分 0.565；多间隔变化不增长 / 真实域差距演示；四层红旗已诚实标出）
+- [ ] **第8-9月** 变化检测 + 模型服务化
+- [ ] **第10-12月** 多 Agent + 自动制图 + 自动报告 + 端到端平台
