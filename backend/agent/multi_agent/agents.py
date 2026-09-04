@@ -193,8 +193,12 @@ def cartography_node(state: dict) -> dict:
 
     import matplotlib
     matplotlib.use("Agg")
+    matplotlib.rcParams["axes.unicode_minus"] = False
     import matplotlib.pyplot as plt
     from scripts.unet_segmentation import rgb_preview
+    # W2：变化区颜色由符号化引擎按数据性质推导（bool mask → binary → 语义"变化"=红），
+    # 替换 W1 硬编码 [0.95, 0.15, 0.15]；reason 进 step_log 可审计。
+    from scripts.auto_symbology import choose_symbology, profile_data
 
     try:
         import rasterio
@@ -205,6 +209,7 @@ def cartography_node(state: dict) -> dict:
         # 复用 analysis 算的 change mask（重新跑一次轻量，保证本节点自包含）
         from scripts.real_change_detection import spectral_diff_change
         change = spectral_diff_change(bands_a, bands_b, threshold=res.get("threshold", 0.08))
+        sym = choose_symbology(profile_data(change.astype(np.uint8), labels=["不变", "变化"]))
 
         out_dir = PROJECT_ROOT / "data" / "output" / "multi_agent_maps"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -214,11 +219,11 @@ def cartography_node(state: dict) -> dict:
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         axes[0].imshow(rgb_preview(bands_a)); axes[0].set_title(f"{cog_a} 真彩"); axes[0].axis("off")
         axes[1].imshow(rgb_preview(bands_b)); axes[1].set_title(f"{cog_b} 真彩"); axes[1].axis("off")
-        # 变化叠加：底=cog_b 真彩，红=变化
+        # 变化叠加：底=cog_b 真彩，变化色由符号化引擎推导（binary → 语义"变化"=红）
         bg = rgb_preview(bands_b) * 0.6
-        bg[change.astype(bool)] = np.array([0.95, 0.15, 0.15])
+        bg[change.astype(bool)] = np.array(matplotlib.colors.to_rgb(sym.colors[-1]))
         axes[2].imshow(bg)
-        axes[2].set_title(f"变化 mask（红=差异 {res['change_ratio']:.2%}，方法: {res['method']}）")
+        axes[2].set_title(f"变化 mask（红=差异 {res['change_ratio']:.2%}，配色: {sym.palette_name}）")
         axes[2].axis("off")
         fig.suptitle("GeoSense Multi-Agent 时相对比", fontsize=12)
         fig.tight_layout()
@@ -227,6 +232,7 @@ def cartography_node(state: dict) -> dict:
 
         log = list(state.get("step_log", []))
         log.append(f"cartography → map saved: {out_png.name}（{out_png.stat().st_size:,} B）")
+        log.append(f"cartography → symbology: {sym.palette_name}（{sym.reason}）")
         return {"map_path": str(out_png), "map_bytes": out_png.stat().st_size,
                 "current_step": "supervisor", "step_log": log}
     except Exception as exc:  # noqa: BLE001

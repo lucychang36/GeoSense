@@ -188,12 +188,12 @@
 > ⚠ **W4 诚实红旗**：① 无红边波段 → 输出是"水色异常初筛"非藻华浓度定量 ② 浑浊湾泥沙假阳性风险（需红边 + 实地叶绿素验证） ③ 无地面真值 → 启发式阈值需按水域调 ④ 跨年季相/潮汐/大气差异（已在无云交集上部分缓解）⑤ 2023 景云 27.5% 漏检不可避免
 > 快速验证：`.venv/bin/python scripts/cyanobacteria_monitor.py`（脚本独立全流程，~5s）
 
-**阶段4 第10月：多 Agent 协作 + 自动制图 🚧（W1 完成）**
+**阶段4 第10月：多 Agent 协作 + 自动制图 🚧（W2 完成）**
 
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 多 Agent 架构设计 | `backend/agent/multi_agent/`（state/agents/graph/__init__ 4 文件）+ `scripts/multi_agent_demo.py` | ✅ |
-| W2 | 自动符号化引擎 | （学习计划：`auto_symbology.py` 根据数据类型自动配色） | ⏭ |
+| W2 | 自动符号化引擎 | `scripts/auto_symbology.py`（OpenSpec 变更 2026-09-04-auto-symbology-engine）+ `cartography_node` 接入 | ✅ |
 | W3 | 自动标注 + 地图综合 | （学习计划：`auto_cartography.py` 完整制图流水线） | ⏭ |
 | W4 | Text-to-Map 原型 | （学习计划：`text_to_map.py` 自然语言→Mapbox 样式 JSON） | ⏭ |
 
@@ -204,6 +204,15 @@
 > ④ **实测**（默认 query「对比深圳湾 2023-07 和 2025-07 的水域变化并出图」）：Planner LLM 拆解 task_type=temporal_change → Data 兜底选 49QGE 日期 COG（`szbay_real_20230708.tif` / `szbay_real_20250727.tif`，含 8 位日期校验剔除 mosaic）→ Analysis spectral_diff 变化占比 **67.64%**（与第8月 W2 baseline 67.6% 吻合，方法复用成立）→ Cartography 3 面板 PNG **543KB** → Supervisor 汇总；**4 步 / 4.82s**
 > ⑤ **data 选择坑**：cogs/ 目录含合成图 `szbay_real_mosaic.tif`（文件名无 8 位日期）→ data_node 用 `_date8` 正则要求 8 位连续数字，否则 mosaic 会被 `_year_floor` 判成最早日期误选
 > ⚠ **诚实红旗**：① **何时不要多 Agent**：单步任务（如「查深圳 POI」）单 Agent 足够，多 Agent 徒增 LLM 调用 / 状态字段 / 调试复杂度 ② 规则回退只是兜底不是修复 —— LLM 拆不出的任务，正则只能猜 ③ W1 线性顺序 + worker 全是确定性纯函数（非 ReAct sub-agent）：无动态路由、worker 不调 LLM 选工具，是「编排」不是「自治」④ 依赖 data/cogs/ 现有真实 COG 对，无数据时 Data Agent 兜底失败
+
+> **第10月 W2 关键数据**：自动符号化引擎 `auto_symbology.py`（~330 行纯函数零 LLM，OpenSpec 变更流程落地）—— 把 W1 红旗③「制图靠人肉」变成显式规则层：探查 `profile_data` → 决策 `choose_symbology` → 渲染 `to_matplotlib` / 前端 `to_mapbox_style`。
+> ① **决策规则**：bool→binary / 整数 unique≤10→categorical / float 跨 0→diverging / 其余→sequential；ColorBrewer 内置 8 个 hex 字典（零新依赖），色盲安全白名单诚实标注（Set2 定性方案无 CB 认证 → False）
+> ② **语义约定层**（领域知识注入）：水=蓝 / 城市=灰 / 植被=绿 / 变化=红 等 8 条优先于机械 palette，命中情况记入 `semantic_hits` 可审计
+> ③ **双格式输出**：matplotlib Colormap（Listed/LinearSegmented）+ Mapbox Style `match`/`interpolate` fill-color 表达式骨架（W4 Text-to-Map 直接消费）
+> ④ **demo 三联**（`data/output/symbology_demo.png` 569KB）：NDVI（sequential YlGnBu）/ U-Net 分类（semantic 水蓝城灰植绿全命中）/ NDVI 差值（diverging RdBu）—— 三段 palette 互异证明「数据变→方案变」
+> ⑤ **接入回归**：`cartography_node` 变化区颜色改引擎推导（binary→语义红），reason 进 step_log；multi_agent 重跑 **67.64% 不变**（只改色不改算法）
+> ⑥ **教学发现**：NDVI 单景自动判定会得 diverging（水面 NDVI 为负、值域跨 0）—— 但那是「水的物理性质」不是「反向植被活性」，**数据性质 ≠ 制图语义**，用 `force_kind` 逃生舱注入领域知识（诚实记录在 demo 注释）
+> ⚠ **W2 诚实红旗**：① 规则表是有限知识（8 palette + 8 语义条），DEM/雷达等超纲数据需扩表 ② 遇「耕地/湿地」等未收录类别回落机械色可能违行业惯例（W3 扩表点）③ Mapbox 只到 fill-color 骨架（完整 Style Spec 归 W4）④ cyanobacteria/render_mask 未迁移是有意取舍（统一渲染归 W3 auto_cartography 流水线）
 > 快速验证：`.venv/bin/python scripts/multi_agent_demo.py`（需 DEEPSEEK_API_KEY，~5s）
 
 ## 项目结构
@@ -286,6 +295,7 @@ GeoSense/
 │   └── async_inference.py   # 第9月 W3：异步推理（分块推理 Window+overlap + 任务队列 + 合成大图内存演示）
 │   └── cyanobacteria_monitor.py # 第9月 W4：蓝藻监测原型（U-Net 水体 + NIR 抬升藻华代理 + 两期对比）
 │   └── multi_agent_demo.py   # 第10月 W1：多 Agent 协作端到端 demo（4 Agent + Supervisor + --trace 逐步看 state）
+│   └── auto_symbology.py    # 第10月 W2：自动符号化引擎（数据类型→ColorBrewer 配色 + 语义约定 + Mapbox 骨架；--selftest 8 断言）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -405,6 +415,10 @@ curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/
 .venv/bin/python scripts/multi_agent_demo.py "深圳湾 2023-07 和 2025-07 有什么变化"  # 自定义问题（Planner LLM 拆解）
 .venv/bin/python scripts/multi_agent_demo.py --trace                     # 逐节点打印 state 变化（plan/cog_a/analysis_result/map_path）
 
+# 6.9 第10月W2：自动符号化引擎（数据类型 → ColorBrewer 配色）
+.venv/bin/python scripts/auto_symbology.py --selftest                   # 决策表自测（8 断言，秒级零数据依赖）
+.venv/bin/python scripts/auto_symbology.py                              # 真实数据三联 demo（NDVI/U-Net分类/NDVI差值 → symbology_demo.png）
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -436,6 +450,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | GIS 计算 | pyproj + shapely | 测地线距离 / 缓冲区 / 坐标转换 |
 | Agent 框架 | LangGraph | 第3月引入（ReAct / 多工具 / 手写 StateGraph 工作流） |
 | 多 Agent 编排 | LangGraph StateGraph + TypedDict 共享状态 | 第10月W1：4 Agent + Supervisor（planner→data→analysis→cartography→supervisor；LLM 拆解 + 确定性 worker + 失败兜底；非消息总线 = 可观测可回滚） |
+| 自动符号化 | ColorBrewer 规则引擎（零 LLM） | 第10月W2：auto_symbology（4 类数据→4 类 palette + 语义约定层 + matplotlib/Mapbox 双格式；W4 Text-to-Map 复用） |
 
 ## 里程碑
 
@@ -455,5 +470,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第9月 W3** 异步推理流水线（分块推理 Window+overlap 一致率 100.00% + 任务队列 queued→running→done + 依赖注入复用单例；实测 /api/model/jobs 提交秒回 + 轮询进度 + 合成大图 16 tiles/0.64s/内存解耦；四层红旗已诚实标出）
 - [x] **第9月 W4** 阶段3集成：蓝藻监测系统原型（深圳湾 2023-07 vs 2025-07 真实 COG；U-Net 水体 + NDWI 一致率 82/80% + 水体内 NIR 抬升稳健异常代理检测；L2 疑似藻华 0.018→0.176 km² 10 倍差；任务执行器注入 AsyncQueue.task_executors 扩展点；五层红旗已诚实标出）
 - [x] **第10月 W1** 多 Agent 架构设计（4 Agent + Supervisor LangGraph StateGraph：Planner LLM 拆解 + Data/Analysis/Cartography 确定性 worker + Supervisor 集中汇总；共享 State 非消息总线；Planner 失败规则回退；实测 67.64% 与第8月 baseline 吻合 / 4 步 4.82s / 3 面板专题图 543KB；红旗：何时不要多 Agent + 线性简化已标出）
-- [ ] **第10月 W2-W4** 自动符号化引擎 / 自动标注+地图综合 / Text-to-Map
+- [x] **第10月 W2** 自动符号化引擎（`auto_symbology.py` ~330 行纯函数零 LLM：4 类数据→4 类 ColorBrewer palette 决策规则 + 语义约定层（水=蓝/植=绿/城=灰/变化=红）+ 双格式输出（matplotlib Colormap + Mapbox match/interpolate 骨架）；--selftest 8/8 PASS；三联 demo YlGnBu/semantic/RdBu 互异；cartography_node 接入回归 67.64% 不变；教学发现：NDVI 单景数据性质（跨 0）≠ 制图语义（单极），force_kind 注入领域知识；OpenSpec 变更 2026-09-04-auto-symbology-engine 全流程）
+- [ ] **第10月 W3-W4** 自动标注+地图综合 / Text-to-Map
 - [ ] **第11-12月** 自动报告生成 + 端到端平台
