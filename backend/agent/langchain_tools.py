@@ -115,13 +115,15 @@ def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> s
         from ..model_service.change import change_cog
         r = change_cog(cog_a, cog_b, method=method)
         # 摘要化返回：只取数值 + 转换矩阵，丢弃 change_cog 里的 base64 PNG（文本 LLM 不可消费）
+        # 注意字段顺序：关键数值必须前置 —— main.py 的 SSE result 事件对 summary 做 [:200] 截断，
+        # 前置保证前端事件流里能看到核心数字（LLM 拿完整 ToolMessage 不受影响）。
         return json.dumps({
-            "cog_a": r["cog_a"],
-            "cog_b": r["cog_b"],
-            "method": r["method"],
             "change_ratio": r["change_ratio"],   # 变化像素占有效像素比例（0~1）
             "n_change": r["n_change"],
             "n_valid": r["n_valid"],
+            "method": r["method"],
+            "cog_a": r["cog_a"],
+            "cog_b": r["cog_b"],
             "class_names": r["class_names"],     # 类别顺序说明（transition 行列含义）
             "transition": r["transition"],       # 3×3 转换矩阵，仅 postclass 有值；[i][j]=类 i→类 j 像素数
         }, ensure_ascii=False)

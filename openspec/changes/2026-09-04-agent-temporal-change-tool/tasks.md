@@ -25,3 +25,11 @@
 
 - [x] proposal.md 状态更新为 applied
 - [x] 向用户汇报：验收 4 条证据 + 关键数值 + 本轮红旗
+
+## verify 阶段（2026-09-04，用户触发 /opsx:verify）
+
+- 新增可重跑验证脚本 **`verify.py`**（本目录）：直调 3 组断言 + `--integration` 走 SSE 让 LLM 自主触发。用法：
+  - `.venv/bin/python openspec/changes/2026-09-04-agent-temporal-change-tool/verify.py`（直调，无需服务，~6s）
+  - `... verify.py --integration`（先起 uvicorn backend.api.main:app --port 8000，再跑，~10-40s）
+- **verify 抓到的真实缺陷（已修复）**：main.py 的 SSE `result` 事件对工具摘要做 `[:200]` 截断，而工具返回 JSON 原先把 `change_ratio` 排在字段尾部 → 前端事件流拿不到核心数字。修复：`langchain_tools.py` 返回字段**关键数值前置**（change_ratio/n_change/n_valid 在前），200 截断天然保住核心数字；LLM 拿完整 ToolMessage 不受影响。
+- 最终结果：**7/7 PASS**（直调 4 断言 + 集成 3 断言），exit 0。
