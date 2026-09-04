@@ -1,6 +1,6 @@
 # Proposal：第10月 W2 自动符号化引擎（auto_symbology）
 
-> 状态：**applied（2026-09-04，验证证据见 tasks.md）**
+> 状态：**archived（2026-09-04，验证证据见 tasks.md；实现与验收全过：selftest 8/8、三联 demo、multi_agent 回归 67.64% 不变）**
 > 日期：2026-09-04
 > 决策：路线 A（规则引擎 + demo + 接 1 个消费方）+ 输出双格式（matplotlib cmap + Mapbox Style JSON 骨架）
 
