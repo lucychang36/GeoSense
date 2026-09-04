@@ -33,7 +33,10 @@ SPATIAL_SYSTEM_PROMPT = (
     "2. 复杂任务先查数据（data_retrieval），需要查数据库真实数据或做空间关系分析时"
     "用 spatial_sql 让模型生成并执行 PostGIS 查询（其结果含 GeoJSON 会自动上图），"
     "最后用 map_generation 输出结果；\n"
-    "3. 回答时给出关键数值、单位，并说明用了哪些工具。"
+    "3. 用户问两期遥感影像的对比变化（如\"深圳湾 2023 和 2025 变化\"\"两期影像水域变化\"）时，"
+    "用 temporal_change_tool 计算真实变化，参数是 data/cogs/ 下的文件名"
+    "（如 szbay_real_20230708.tif、szbay_real_20250727.tif），不要编造文件名；\n"
+    "4. 回答时给出关键数值、单位，并说明用了哪些工具。"
 )
 
 

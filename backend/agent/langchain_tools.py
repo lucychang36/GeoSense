@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from langchain_core.tools import tool
 
@@ -99,6 +100,42 @@ def spatial_sql_tool(question: str) -> str:
     return spatial_sql(question)
 
 
+# ---- 第9月 W2 模型能力接入：遥感影像时相对比（2026-09-04 OpenSpec 变更，最小工具） ----
+# 为什么函数内 import：model_service 依赖 torch/U-Net（重），lazy import 让 Agent 构建秒级完成；
+# 工具首次被调用时才触发模型加载 —— 且与 /api/model 服务共享同进程 MPS 单例（零网络，不打 HTTP 环路）。
+
+@tool
+def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> str:
+    """对 data/cogs/ 下两景同区域遥感影像（文件名）做变化检测，返回变化占比与类别转换统计。
+    当用户问"两期/两个年份的影像对比变化""深圳湾 2023 和 2025 相比变了多少"时使用。
+    例：cog_a=szbay_real_20230708.tif, cog_b=szbay_real_20250727.tif；
+    method="postclass"（U-Net 分类后比较，默认，推荐）或 "spectral"（光谱差分 baseline）。"""
+    try:
+        # lazy import：保持 Agent 构建轻量；运行时与 model_service 共享 MPS 单例
+        from ..model_service.change import change_cog
+        r = change_cog(cog_a, cog_b, method=method)
+        # 摘要化返回：只取数值 + 转换矩阵，丢弃 change_cog 里的 base64 PNG（文本 LLM 不可消费）
+        return json.dumps({
+            "cog_a": r["cog_a"],
+            "cog_b": r["cog_b"],
+            "method": r["method"],
+            "change_ratio": r["change_ratio"],   # 变化像素占有效像素比例（0~1）
+            "n_change": r["n_change"],
+            "n_valid": r["n_valid"],
+            "class_names": r["class_names"],     # 类别顺序说明（transition 行列含义）
+            "transition": r["transition"],       # 3×3 转换矩阵，仅 postclass 有值；[i][j]=类 i→类 j 像素数
+        }, ensure_ascii=False)
+    except (FileNotFoundError, ValueError) as e:
+        # 用户输入类错误 → 转文本不抛异常（抛了会炸 ReAct 循环）；带候选兜底 LLM 编造文件名
+        from ..model_service.loader import COGS_DIR
+        candidates = sorted(
+            p.name for p in COGS_DIR.glob("*.tif")
+            if re.search(r"\d{8}", p.name)      # 只列带日期的真实 COG（剔除合成 mosaic）
+        )
+        hint = "、".join(candidates) if candidates else "（data/cogs/ 下暂无带日期 COG）"
+        return f"[工具错误] {e}。可用带日期的 COG 文件：{hint}"
+
+
 # LangGraph 使用的工具列表（W1 的 3 个原子工具 + W2 的 7 个领域工具 + SQL 工具）
 GIS_TOOLS = [calc_distance_tool, create_buffer_tool, transform_coord_tool]
 SPATIAL_TOOLS = [
@@ -110,5 +147,6 @@ SPATIAL_TOOLS = [
     statistics_calc_tool,
     map_generation_tool,
     spatial_sql_tool,
+    temporal_change_tool,
 ]
 

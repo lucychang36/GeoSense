@@ -96,6 +96,7 @@
 |----|------|--------|------|
 | W1 | 变化检测（光谱差分 vs 分类后比较，合成时序） | `scripts/change_detection.py`：5 景合成（2019-2023）+ 真实域差距演示 | ✅ |
 | W2 | 真实时相对变化检测（补 W1 红旗①） | `scripts/real_change_detection.py`：2023-07-08 vs 2025-07-27 同 tile 49QGE，像素级天然对齐 | ✅ |
+| W3-W4 | （已合并至 W1-W2） | — | ⏭ |
 
 > **第7月 W1 关键数据**：U-Net（base=16，4 层编/解码，194 万参数），80 景合成训练（程序化真值）/ 20 景验证，
 > 20 epochs 收敛 **val mIoU=0.958**（water 0.994 / urban 0.941 / vegetation 0.940）。
@@ -219,7 +220,7 @@ GeoSense/
 │   │   ├── tools.py        # 3 个 GIS 工具 + Schema + 分发器（W4）
 │   │   ├── spatial_tools.py # 7 个空间领域工具（第3月W2，数据已切 PostGIS）
 │   │   ├── sql_tools.py    # spatial_sql：自然语言→PostGIS SQL→校验→执行（补课）
-│   │   ├── langchain_tools.py # 工具 → LangChain @tool 适配（第3月W1）
+│   │   ├── langchain_tools.py # 工具 → LangChain @tool 适配（第3月W1；含遥感 temporal_change_tool，2026-09-04 OpenSpec 变更）
 │   │   ├── graph.py        # LangGraph ReAct / 多工具 Agent 构建
 │   │   ├── workflow.py     # 手写 StateGraph 多步工作流 + 错误处理（第3月W3）
 │   │   └── data/           # 深圳 POI 样例数据集（sz_poi.json）
@@ -448,9 +449,8 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第7月 W2** 完整训练流水线（合成预训练 + NDWI/NDVI 伪标签 + 真实微调；真实伪标签 mIoU 0.501→0.927，灾难性遗忘仅 -0.009）
 - [x] **第7月 W3** SAM 零样本对象级分割（232 对象，与 W2 一致率 70.1%；三层红旗已诚实标出）
 - [x] **第7月 W4** YOLOv8 船舶检测（合成 val mAP50=0.985；COCO 零样本 0 船 / 真实 mosaic 105 框仅 5.7% 在水上；三层红旗已诚实标出）
-- [x] **第8月 W1** 合成时序变化检测（分类后比较 IoU 0.889 vs 光谱差分 0.394；多间隔变化率 36% 稳定=合成无累积性）
-- [x] **第8月 W2** 真实时相对变化检测（同 tile 49QGE 2023-07 vs 2025-07；U-Net vs 伪标签一致率 94.6%，深水稳定性自检 1.51% 翻城=W1 红旗① 补完）
 - [x] **第8月 W1** 变化检测（5 景合成时序 2019-2023；分类后比较 F1=0.941 完胜光谱差分 0.565；多间隔变化不增长 / 真实域差距演示；四层红旗已诚实标出）
+- [x] **第8月 W2** 真实时相对变化检测（同 tile 49QGE 2023-07 vs 2025-07；U-Net vs 伪标签一致率 94.6%，深水稳定性自检 1.51% 翻城=W1 红旗① 补完）
 - [x] **第9月 W2** 模型服务化（U-Net 分割/变化检测/YOLO 检测 → FastAPI `/api/model/*` 四端点；单例 lazy 加载 + MPS + base64 PNG 直出；实测 health/segment/change(11.87%)/detect(44 船) 全通）
 - [x] **第9月 W3** 异步推理流水线（分块推理 Window+overlap 一致率 100.00% + 任务队列 queued→running→done + 依赖注入复用单例；实测 /api/model/jobs 提交秒回 + 轮询进度 + 合成大图 16 tiles/0.64s/内存解耦；四层红旗已诚实标出）
 - [x] **第9月 W4** 阶段3集成：蓝藻监测系统原型（深圳湾 2023-07 vs 2025-07 真实 COG；U-Net 水体 + NDWI 一致率 82/80% + 水体内 NIR 抬升稳健异常代理检测；L2 疑似藻华 0.018→0.176 km² 10 倍差；任务执行器注入 AsyncQueue.task_executors 扩展点；五层红旗已诚实标出）
