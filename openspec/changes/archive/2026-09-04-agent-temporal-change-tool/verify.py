@@ -20,7 +20,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]   # openspec/changes/<id>/ → 项目根
+PROJECT_ROOT = Path(__file__).resolve()
+# 向上找含 backend/ 的祖先目录作为项目根（归档到 changes/archive/ 后层级变化也不受影响）
+while PROJECT_ROOT != PROJECT_ROOT.parent:
+    if (PROJECT_ROOT / "backend").is_dir():
+        break
+    PROJECT_ROOT = PROJECT_ROOT.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 API = "http://127.0.0.1:8000"

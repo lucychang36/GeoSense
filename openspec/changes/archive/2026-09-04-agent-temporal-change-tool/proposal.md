@@ -1,6 +1,6 @@
 # 变更提案：为 Spatial Agent 增加 temporal_change 工具（最小模型能力接入）
 
-> 状态：**applied（2026-09-04，验证证据见 tasks.md）**
+> 状态：**archived（2026-09-04，explore→design→task→apply→verify 全流程闭环，已归档至 openspec/changes/archive/）**
 > 日期：2026-09-04
 > 决策：路线 A（Spatial Agent @tool）+ 首个工具 = 变化检测 change
 
