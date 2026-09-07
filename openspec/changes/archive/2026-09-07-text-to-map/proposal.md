@@ -1,6 +1,6 @@
 # Proposal：第10月 W4 Text-to-Map（text_to_map）
 
-> 状态：**applied（2026-09-07，验证证据见 tasks.md；验收 5 条全过：selftest 13/13、CLI demo 三主题互异零回退、起服务 curl style 事件 + 浏览器实测双主题上图清旧层、multi_agent 回归 67.64% 不变、W2/W3 引擎零改动）**
+> 状态：**archived（2026-09-07，verify direct 23/23 + SSE integration 27/27；用户浏览器实测通过并确认标签可见性修复）**
 > 日期：2026-09-07
 > 决策：方案 B（意图-渲染分层：LLM 只做 NL→受限枚举 IR，Style JSON 由确定性代码组装）+ **SSE 事件驱动统一入口**（用户指定 demo 直接渲染在 frontend/index.html，经质询修订：废弃独立控件方案，走 /api/chat 的 style 事件）
 
