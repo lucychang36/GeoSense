@@ -42,3 +42,11 @@
 - **--integration 27/27 PASS**（SSE 实测 10.3s）：tool 事件 LLM 自主触发 text_to_map_tool → style 事件全量 JSON 可解析、载荷 spec v8 合法 → answer/done 收尾；事件统计 {status:1, tool:2, result:2, style:1, answer:1, done:1}
 - **verify 脚本自身两处修正**（实现无恙）：① layer_ids 断言初版写窄——按设计含 sources+layers 两类 id（前端清旧层两者都删），改为超集断言 ② `ok = ... and palette.get("name")` 返回字符串 "Greens"（truthy）致 sum() 崩——bool() 包裹；另再次踩中 Edit 工具报成功磁盘未更新坑，heredoc patch 落盘
 - proposal 状态维持 applied，待用户确认后归档
+
+## 用户实测反馈修复（2026-09-07 下午）：标签在暗色底图上不可见
+
+- **现象**：用户本地浏览器实测——POI 点正常，但"没看到地铁名称标签"
+- **诊断**（agent-browser eval `queryRenderedFeatures`）：标签其实渲染了 58 个，根因是 **text-color #222222 深灰字压在 dark-v11 暗色底图上对比度趋零**——W3 标注配色为白底 matplotlib demo 设计，移植到 Mapbox 暗底未做适配
+- **修复**：`assemble_style` poi 分支 symbol paint 改浅字深描边（#f5f5f5 / halo #1a1a1a / width 1.5）；selftest 补第 14 条断言"symbol 标签浅字深描边（暗底对比度适配）"（亮度和比较，LLM 不在场）
+- **复验**：selftest 14/14；verify direct 23/23；CLI demo 重跑零回退；浏览器实测标签清晰可读（截图为证，z9.3 下 58/107 可见——其余被底图标牌碰撞避让，放大后更多）
+- **经验**：跨渲染端移植标注样式必须做底图明暗适配；`queryRenderedFeatures` 是"图层存在但看不见"类问题的决定性诊断工具

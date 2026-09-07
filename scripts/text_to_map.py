@@ -399,8 +399,10 @@ def assemble_style(ir: CartographyIR, data: dict) -> dict:
             style["layers"].append({
                 "id": _reg(f"{T2M_PREFIX}poi-labels"), "type": "symbol", "source": sid,
                 "layout": lab["layout"],
-                "paint": {"text-color": "#222222", "text-halo-color": "#ffffff",
-                          "text-halo-width": 1.2}})
+                # 对比度适配：项目底图是 dark-v11（暗色），标签必须浅字+深描边；
+                # W3 的 #222 深灰/白描边是为白底 matplotlib demo 设计的，暗底上几乎不可见
+                "paint": {"text-color": "#f5f5f5", "text-halo-color": "#1a1a1a",
+                          "text-halo-width": 1.5}})
         style["semantic_hits"] = hits
         style["label_stats"] = {"placed": data.get("n_placed", 0), "dropped": data.get("n_dropped", 0)}
 
@@ -500,6 +502,15 @@ def selftest() -> int:
     check("语义覆盖：park → 植被绿（G 通道最大）",
           int(st_p["semantic_hits"]["park"].split("→")[1][3:5], 16)
           > int(st_p["semantic_hits"]["park"].split("→")[1][1:3], 16), str(st_p["semantic_hits"]))
+    # symbol 层配色（注入合成 labels_layer；项目底图 dark-v11 为暗色）
+    st_p2 = assemble_style(ir_p, {**data_p,
+                                  "labels_layer": {"source": fc,
+                                                   "layout": {"text-field": ["get", "name"]}}})
+    sym = next(l for l in st_p2["layers"] if l["type"] == "symbol")
+    _lum = lambda c: int(c[1:3], 16) + int(c[3:5], 16) + int(c[5:7], 16)
+    check("symbol 标签浅字深描边（暗底对比度适配）",
+          _lum(sym["paint"]["text-color"]) > _lum(sym["paint"]["text-halo-color"]),
+          f"text={sym['paint']['text-color']} halo={sym['paint']['text-halo-color']}")
 
     # --- ndvi assemble（合成网格值）---
     ir_n = CartographyIR(theme="ndvi", region="深圳湾", color_intent="植被", rationale="测试")
