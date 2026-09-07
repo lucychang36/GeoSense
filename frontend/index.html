@@ -75,7 +75,7 @@
     <div class="side" id="app">
       <div class="chat" ref="chat">
         <div class="msg assistant">
-          <div class="bubble">你好，我是 GeoSense，底图已叠加深圳湾卫星影像（COG），数据来自真实 POI（OpenStreetMap）。试着问我：<br>「查询深圳市龙岗区的医院分布」<br>「深圳市民中心 (114.0579, 22.5431) 周边 3 公里内的学校」</div>
+          <div class="bubble">你好，我是 GeoSense，底图已叠加深圳湾卫星影像（COG），数据来自真实 POI（OpenStreetMap）。试着问我：<br>「查询深圳市龙岗区的医院分布」<br>「深圳市民中心 (114.0579, 22.5431) 周边 3 公里内的学校」<br>「给深圳全市做一张兴趣点图，公园按植被绿色显示，并标注地铁站」<br>「深圳湾的 NDVI 植被指数专题图，植被茂密的地方用绿色」</div>
         </div>
 
         <div class="msg user" v-for="(m, i) in messages" :key="i">
@@ -252,7 +252,8 @@
 
     createApp({
       data() {
-        return { input: '', messages: [], steps: [], answers: [], busy: false };
+        return { input: '', messages: [], steps: [], answers: [], busy: false,
+                 t2mLayerIds: [], t2mSourceIds: [] };
       },
       methods: {
         short(args) {
@@ -310,6 +311,9 @@
             this.steps[idx].push({ name: ev.data.name, args: ev.data.args });
           } else if (ev.event === 'result' && ev.data.geojson) {
             this.drawGeoJSON(ev.data.geojson);
+          } else if (ev.event === 'style') {
+            // 第10月 W4 Text-to-Map：text_to_map_tool 生成的样式自动上图
+            this.applyStyle(ev.data);
           } else if (ev.event === 'answer') {
             this.answers[idx] += ev.data.delta;
           } else if (ev.event === 'error') {
@@ -340,6 +344,18 @@
           const bb = geojsonBounds(geojson);
           if (bb) map.fitBounds(bb, { padding: 80 });
           console.info(`高亮区边界：${name}`);
+        },
+        applyStyle(payload) {
+          // W4 Text-to-Map：先清上一批 t2m 图层/源（图层生命周期由前端记录 ids 管理），
+          // 再注入后端组装好的 sources/layers（id 已带 t2m- 前缀，防与既有图层冲突）。
+          (this.t2mLayerIds || []).forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+          (this.t2mSourceIds || []).forEach(id => { if (map.getSource(id)) map.removeSource(id); });
+          Object.entries(payload.sources || {}).forEach(([id, s]) => map.addSource(id, s));
+          (payload.layers || []).forEach(l => map.addLayer(l));
+          this.t2mLayerIds = (payload.layers || []).map(l => l.id);
+          this.t2mSourceIds = Object.keys(payload.sources || {});
+          if (payload.fit_bounds) map.fitBounds(payload.fit_bounds, { padding: 40 });
+          console.info(`Text-to-Map：${payload.theme} 专题已上图（${this.t2mLayerIds.length} 个图层）`);
         }
       }
     }).mount('#app');

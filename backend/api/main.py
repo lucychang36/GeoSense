@@ -165,6 +165,10 @@ async def _stream(query: str):
                             data = json.loads(_text_of(m.content))
                             if isinstance(data, dict) and "geojson" in data and data["geojson"]:
                                 payload["geojson"] = data["geojson"]
+                            # 第10月 W4 Text-to-Map：工具返回含 map_style → 新事件类型 style
+                            # 全量下发（不经 result 的 [:200] 摘要路径），前端 addLayer 注入渲染
+                            if isinstance(data, dict) and data.get("map_style"):
+                                yield _sse("style", data["map_style"])
                         except (json.JSONDecodeError, TypeError):
                             pass
                         yield _sse("result", payload)

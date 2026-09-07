@@ -138,6 +138,32 @@ def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> s
         return f"[工具错误] {e}。可用带日期的 COG 文件：{hint}"
 
 
+# ---- 第10月 W4 Text-to-Map：自然语言 → Mapbox 样式（2026-09-07 OpenSpec 变更） ----
+# 为什么函数内 import：text_to_map 依赖 rasterio/W2/W3 引擎，lazy import 保持 Agent 构建轻量；
+# 意图-渲染分层（explore 方案 B）：planner 只负责把制图请求路由到本工具，query 传用户原话。
+
+@tool
+def text_to_map_tool(query: str) -> str:
+    """把用户的自然语言制图需求转成 Mapbox 地图样式并在前端地图上渲染。
+    当用户想要「做一张...图」「把...叠加到地图上」「给...上色」「标注...」等制图/地图样式请求时使用，
+    query 传用户原话（不要改写）。支持三类主题：
+    poi=兴趣点分类图（地铁站/公园/学校，含标注避让）、
+    ndvi=植被指数网格专题图、
+    cog=卫星影像叠加（透明度可调，文件名来自 data/cogs/）。
+    返回 JSON 含 map_style（系统会自动上图），summary 为一句话结果说明。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _root = str(_Path(__file__).resolve().parents[2])
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from scripts.text_to_map import text_to_map
+        return json.dumps(text_to_map(query), ensure_ascii=False)
+    except Exception as e:                                   # noqa: BLE001 —— 错误转文本不炸 ReAct
+        return (f"[工具错误] {type(e).__name__}: {e}。可用的制图主题："
+                f"poi（兴趣点分类图）/ ndvi（NDVI 网格图）/ cog（卫星影像叠加）")
+
+
 # LangGraph 使用的工具列表（W1 的 3 个原子工具 + W2 的 7 个领域工具 + SQL 工具）
 GIS_TOOLS = [calc_distance_tool, create_buffer_tool, transform_coord_tool]
 SPATIAL_TOOLS = [
@@ -150,5 +176,6 @@ SPATIAL_TOOLS = [
     map_generation_tool,
     spatial_sql_tool,
     temporal_change_tool,
+    text_to_map_tool,
 ]
 

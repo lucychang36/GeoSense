@@ -188,7 +188,7 @@
 > ⚠ **W4 诚实红旗**：① 无红边波段 → 输出是"水色异常初筛"非藻华浓度定量 ② 浑浊湾泥沙假阳性风险（需红边 + 实地叶绿素验证） ③ 无地面真值 → 启发式阈值需按水域调 ④ 跨年季相/潮汐/大气差异（已在无云交集上部分缓解）⑤ 2023 景云 27.5% 漏检不可避免
 > 快速验证：`.venv/bin/python scripts/cyanobacteria_monitor.py`（脚本独立全流程，~5s）
 
-**阶段4 第10月：多 Agent 协作 + 自动制图 🚧（W2 完成）**
+**阶段4 第10月：多 Agent 协作 + 自动制图 ✅（全部完成，阶段4 收官）**
 
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
@@ -223,6 +223,15 @@
 > ⑤ **数据源发现**：data/osm/ 的 way/relation 当年用 `out center` 下载只有中心点无多边形 → 综合实验改用 PostGIS `admin_boundary` 真实区界（更曲折顶点更多）；W2 配色语义表无"地铁/公园/学校"→ Set2 机械回落（实证 W2 红旗②的回落行为）
 > ⚠ **W3 诚实红旗**：① 贪心近似非全局最优（标注避让 NP-hard），密集区丢弃率偏高——丢弃是特性不是 bug ② 轴对齐包围盒未考虑标签旋转 ③ 共点 9 要素 8 方位只容 4 个标签（候选彼此也碰撞，几何直觉一致）④ OSM 多边形合法性未深校验（buffer(0) 兜底）⑤ 龙岗区 z12/z14 容差小于顶点间距 → 简化无效果（492→492，诚实报告）
 > 快速验证：`.venv/bin/python scripts/auto_cartography.py --selftest`（10 断言，秒级零数据依赖）；完整 demo `python scripts/auto_cartography.py`（需 PostGIS 容器）
+
+> **第10月 W4 关键数据**：Text-to-Map `text_to_map.py`（阶段4 收官，OpenSpec 变更流程落地）—— 自然语言 → Mapbox Style Spec v8 JSON，**意图-渲染分层**：LLM 只做「语义→枚举」（DeepSeek temp=0，输出空间是受限白名单），确定性代码做「枚举→语法」（`assemble_style` 组装合法 Spec）。
+> ① **CartographyIR**：theme（poi/ndvi/cog 三枚举）+ visible/label_classes + color_semantics（语义词必须命中 W2 SEMANTIC 表）+ cog 白名单（manifest.json）+ raster_opacity + rationale 必填（不可审计的样式不生成）；校验三道闸（parse→枚举→引用），失败重试 1 次 → 回退默认 IR 并标记 `fallback`（不静默降级）
+> ② **三主题伏笔回收**：poi → W2 match 表达式（fill+circle 复用**同一表达式对象**：表达式与图层类型解耦）+ W3 标注避让 symbol 层；ndvi → W2 interpolate 表达式（`raster_to_grid` 用 rasterio `read(out_shape)` average 重采样 40×40 网格多边形化，补连续数据载体缺口）；cog → raster-opacity（:8001 瓦片服务一句话控透明度）
+> ③ **SSE 事件驱动统一入口**（用户质询后的修订设计）：复用 /api/chat 流，planner 路由 → `text_to_map_tool`（SPATIAL_TOOLS 9→10，模式同 temporal_change_tool）→ 新事件类型 `style` 全量下发（不经 result 的 [:200] 摘要路径，summary 字段前置）→ 前端 `applyStyle` 清旧（layer_ids 记录）→ `t2m-` 前缀注入 → fitBounds
+> ④ **实测**：--selftest 13/13 PASS（LLM 不在场）；CLI demo 3 条 NL → poi/ndvi/cog 三份 Style JSON 主题互异、零回退（公园→植被绿 #4C9F38 / NDVI→Greens / 半透明→0.5，LLM 三处决策全对）；起服务 curl 实测 style 事件可达；**浏览器实测**：POI 图（公园绿 + 地铁橙 + 107 标注）与 NDVI 网格图先后上图、旧图层自动清除、既有 COG/POI 聚合层不破坏；multi_agent 回归 67.64% 不变
+> ⑤ **踩坑**：prompt 模板含 JSON schema 示例不能用 `.format()`（`{"error": ...}` 被当占位符抛 `KeyError '"error"'`）→ replace 拼接；match 表达式结构 `["match",["get",k],v0,c0,...]` 键在偶数位（断言索引写错被 selftest 抓住）
+> ⚠ **W4 诚实红旗**：① LLM 对训练外语义表述可能选错枚举（回退默认兜底，不根除）② planner 误触发/漏触发概率非零（工具描述+系统规则缓解）③ style 事件几十 KB 级全量（数据量大需改事件带 id + 前端拉取）④ raster_to_grid 是中心点采样近似（40×40 教学取舍，边缘锯齿）⑤ 浏览器渲染验证依赖网络+token 配额，不能进 CI（selftest 只测 JSON 结构）⑥ 实为 Text-to-Overlay（叠加层注入非整图 setStyle，保既有图层是有意取舍）
+> 快速验证：`.venv/bin/python scripts/text_to_map.py --selftest`（13 断言零 LLM）；CLI demo `python scripts/text_to_map.py`（3 条真实 NL 走 DeepSeek，~30s）；前端实测：起服务后聊天框发「给深圳全市做一张兴趣点图…」
 
 ## 项目结构
 
@@ -427,6 +436,14 @@ curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/
 # 6.9 第10月W2：自动符号化引擎（数据类型 → ColorBrewer 配色）
 .venv/bin/python scripts/auto_symbology.py --selftest                   # 决策表自测（8 断言，秒级零数据依赖）
 .venv/bin/python scripts/auto_symbology.py                              # 真实数据三联 demo（NDVI/U-Net分类/NDVI差值 → symbology_demo.png）
+
+# 6.10 第10月W3/W4：自动制图流水线 + Text-to-Map（阶段4 收官）
+.venv/bin/python scripts/auto_cartography.py --selftest                 # W3：标注避让+综合自测（10 断言）
+.venv/bin/python scripts/auto_cartography.py                            # W3：三联 demo（需 PostGIS 容器）
+.venv/bin/python scripts/text_to_map.py --selftest                      # W4：组装器自测（13 断言，零 LLM）
+.venv/bin/python scripts/text_to_map.py                                 # W4：3 条真实 NL → 3 份 Style JSON（走 DeepSeek，~30s）
+# W4 前端实测（起服务后浏览器 http://127.0.0.1:8000/，聊天框发）：
+#   「给深圳全市做一张兴趣点图，公园按植被绿色显示，并标注地铁站」→ style 事件自动上图
 
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
