@@ -34,3 +34,11 @@
 - **偏差记录**（对 design）：① 前端 id 前缀改由**后端预置**（design D7 原写前端加前缀——后端统一生成更干净，前端零加工）② demo 落盘路径 `data/output/text_to_map/`（proposal 原写 `data/output/`，加子目录更整洁）③ W3 的 auto_cartography.py 在 README 项目结构区漏登（本轮回溯补上）
 - **踩坑**：① `_EXTRACT_PROMPT` 含 JSON schema 示例不能用 `.format()`——`{"error": ...}` 的 `"error"` 被当占位符抛 `KeyError '"error"'`，demo 三条全部静默回退后单测 `_llm_json` 定位 → 改 replace 拼接 ② WorkBuddy 会话内 bash `&` 背景进程随 shell 退出被杀 → uvicorn 用 run_in_background
 - **commit hash**：见 git log（本轮提交）
+
+## verify 阶段（2026-09-07）
+
+- 新增 `verify.py`（模式同 temporal_change_tool：direct 直调 + `--integration` SSE）
+- **direct 23/23 PASS**（~5s，零 LLM）：引擎 selftest 复跑 13/13 + validate_ir 四类拒绝（非法 theme / 白名单外 cog / 未注册语义词 / label⊆）+ 工具注册 9→10 + graph 制图规则 + main.py style 发射 + 前端 style 分支/applyStyle + demo 三 JSON spec v8 结构（source=id 引用 / layer_ids 覆盖 sources+layers / fit_bounds / 三主题互异 / semantic_hits / label_stats 107 placed）
+- **--integration 27/27 PASS**（SSE 实测 10.3s）：tool 事件 LLM 自主触发 text_to_map_tool → style 事件全量 JSON 可解析、载荷 spec v8 合法 → answer/done 收尾；事件统计 {status:1, tool:2, result:2, style:1, answer:1, done:1}
+- **verify 脚本自身两处修正**（实现无恙）：① layer_ids 断言初版写窄——按设计含 sources+layers 两类 id（前端清旧层两者都删），改为超集断言 ② `ok = ... and palette.get("name")` 返回字符串 "Greens"（truthy）致 sum() 崩——bool() 包裹；另再次踩中 Edit 工具报成功磁盘未更新坑，heredoc patch 落盘
+- proposal 状态维持 applied，待用户确认后归档
