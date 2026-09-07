@@ -194,7 +194,7 @@
 |----|------|--------|------|
 | W1 | 多 Agent 架构设计 | `backend/agent/multi_agent/`（state/agents/graph/__init__ 4 文件）+ `scripts/multi_agent_demo.py` | ✅ |
 | W2 | 自动符号化引擎 | `scripts/auto_symbology.py`（OpenSpec 变更 2026-09-04-auto-symbology-engine）+ `cartography_node` 接入 | ✅ |
-| W3 | 自动标注 + 地图综合 | （学习计划：`auto_cartography.py` 完整制图流水线） | ⏭ |
+| W3 | 自动标注 + 地图综合 | `scripts/auto_cartography.py`（OpenSpec 变更 2026-09-07-auto-cartography；复用 W2 符号化） | ✅ |
 | W4 | Text-to-Map 原型 | （学习计划：`text_to_map.py` 自然语言→Mapbox 样式 JSON） | ⏭ |
 
 > **第10月 W1 关键数据**：多 Agent 架构设计 —— 4 Agent + Supervisor 的 LangGraph 协作链路，打通「自然语言问题 → 分工执行 → 集中汇总」。
@@ -214,6 +214,15 @@
 > ⑥ **教学发现**：NDVI 单景自动判定会得 diverging（水面 NDVI 为负、值域跨 0）—— 但那是「水的物理性质」不是「反向植被活性」，**数据性质 ≠ 制图语义**，用 `force_kind` 逃生舱注入领域知识（诚实记录在 demo 注释）
 > ⚠ **W2 诚实红旗**：① 规则表是有限知识（8 palette + 8 语义条），DEM/雷达等超纲数据需扩表 ② 遇「耕地/湿地」等未收录类别回落机械色可能违行业惯例（W3 扩表点）③ Mapbox 只到 fill-color 骨架（完整 Style Spec 归 W4）④ cyanobacteria/render_mask 未迁移是有意取舍（统一渲染归 W3 auto_cartography 流水线）
 > 快速验证：`.venv/bin/python scripts/multi_agent_demo.py`（需 DEEPSEEK_API_KEY，~5s）
+
+> **第10月 W3 关键数据**：自动标注 + 地图综合 `auto_cartography.py`（纯函数零 LLM 零新依赖，OpenSpec 变更流程落地）—— 流水线 = W2 符号化（选色）+ W3 标注（标谁/标哪）+ W3 综合（缩放自适应简化）。
+> ① **标注避让**（手写 MapboxGL symbol 引擎）：8 方位候选锚点（右上优先）+ CJK 包围盒（字符宽×米/像素）+ 双类碰撞（已放置标签盒 + 全部要素点位盒）+ 优先级贪心（subway>park>school，同级面积大优先），全撞则丢弃——宁可不标不能叠
+> ② **地图综合**：Douglas-Peucker（shapely `simplify` preserve_topology）+ min-area 过滤，tolerance = 像素容差 × 米/像素（`156543·cos(lat)/2^zoom`）随 zoom 自适应；低 zoom 小多边形不是"变小"而是"消失"
+> ③ **实测**（OSM 深圳 388 全具名地铁站 + 1110 学校 + PostGIS 10 区界）：z10 全市地铁放置 109/丢弃 279（**丢弃率 72%**——城市概览只标重点的直观课）；z12 福田-罗湖 16×8km 窗口放置 53/丢弃率 87%；两联**已放置标签两两包围盒不重叠（脚本内硬断言）**
+> ④ **ST_Simplify 对照实验**（龙岗区边界 492 顶点，同 EPSG:3857 同 GEOS 内核）：z12/z14 与 shapely `preserve_topology=True` **逐点一致 Hausdorff=0**；z10 大容差下 `ST_Simplify`（默认无拓扑保持）249 顶点 vs 保拓扑 250 顶点分叉 Hausdorff 65.3m——**同一算法家族、不同拓扑语义的实证**
+> ⑤ **数据源发现**：data/osm/ 的 way/relation 当年用 `out center` 下载只有中心点无多边形 → 综合实验改用 PostGIS `admin_boundary` 真实区界（更曲折顶点更多）；W2 配色语义表无"地铁/公园/学校"→ Set2 机械回落（实证 W2 红旗②的回落行为）
+> ⚠ **W3 诚实红旗**：① 贪心近似非全局最优（标注避让 NP-hard），密集区丢弃率偏高——丢弃是特性不是 bug ② 轴对齐包围盒未考虑标签旋转 ③ 共点 9 要素 8 方位只容 4 个标签（候选彼此也碰撞，几何直觉一致）④ OSM 多边形合法性未深校验（buffer(0) 兜底）⑤ 龙岗区 z12/z14 容差小于顶点间距 → 简化无效果（492→492，诚实报告）
+> 快速验证：`.venv/bin/python scripts/auto_cartography.py --selftest`（10 断言，秒级零数据依赖）；完整 demo `python scripts/auto_cartography.py`（需 PostGIS 容器）
 
 ## 项目结构
 
@@ -451,6 +460,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | Agent 框架 | LangGraph | 第3月引入（ReAct / 多工具 / 手写 StateGraph 工作流） |
 | 多 Agent 编排 | LangGraph StateGraph + TypedDict 共享状态 | 第10月W1：4 Agent + Supervisor（planner→data→analysis→cartography→supervisor；LLM 拆解 + 确定性 worker + 失败兜底；非消息总线 = 可观测可回滚） |
 | 自动符号化 | ColorBrewer 规则引擎（零 LLM） | 第10月W2：auto_symbology（4 类数据→4 类 palette + 语义约定层 + matplotlib/Mapbox 双格式；W4 Text-to-Map 复用） |
+| 自动标注 + 地图综合 | 8 方位候选避让 / Douglas-Peucker 缩放自适应 | 第10月W3：auto_cartography（包围盒碰撞 + 优先级贪心 + tolerance 随 zoom 换算 + Mapbox symbol-sort-key；ST_Simplify 保拓扑逐点一致实证） |
 
 ## 里程碑
 
@@ -471,5 +481,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第9月 W4** 阶段3集成：蓝藻监测系统原型（深圳湾 2023-07 vs 2025-07 真实 COG；U-Net 水体 + NDWI 一致率 82/80% + 水体内 NIR 抬升稳健异常代理检测；L2 疑似藻华 0.018→0.176 km² 10 倍差；任务执行器注入 AsyncQueue.task_executors 扩展点；五层红旗已诚实标出）
 - [x] **第10月 W1** 多 Agent 架构设计（4 Agent + Supervisor LangGraph StateGraph：Planner LLM 拆解 + Data/Analysis/Cartography 确定性 worker + Supervisor 集中汇总；共享 State 非消息总线；Planner 失败规则回退；实测 67.64% 与第8月 baseline 吻合 / 4 步 4.82s / 3 面板专题图 543KB；红旗：何时不要多 Agent + 线性简化已标出）
 - [x] **第10月 W2** 自动符号化引擎（`auto_symbology.py` ~330 行纯函数零 LLM：4 类数据→4 类 ColorBrewer palette 决策规则 + 语义约定层（水=蓝/植=绿/城=灰/变化=红）+ 双格式输出（matplotlib Colormap + Mapbox match/interpolate 骨架）；--selftest 8/8 PASS；三联 demo YlGnBu/semantic/RdBu 互异；cartography_node 接入回归 67.64% 不变；教学发现：NDVI 单景数据性质（跨 0）≠ 制图语义（单极），force_kind 注入领域知识；OpenSpec 变更 2026-09-04-auto-symbology-engine 全流程）
-- [ ] **第10月 W3-W4** 自动标注+地图综合 / Text-to-Map
+- [x] **第10月 W3** 自动标注 + 地图综合（`auto_cartography.py` 纯函数零 LLM：8 方位候选避让 + CJK 包围盒碰撞 + 优先级贪心 + DP 简化 tolerance 随 zoom 换算 + min-area 过滤 + Mapbox symbol-sort-key 骨架；--selftest 10/10 PASS；真实 OSM 388 地铁 z10 丢弃率 72% / z12 硬断言标签两两不重叠；ST_Simplify 对照实验发现保拓扑 vs 无拓扑语义分歧（z10 Hausdorff 65.3m / PreserveTopology 逐点一致 0）；数据源切换 OSM→PostGIS 区界（out center 无多边形）；OpenSpec 变更 2026-09-07-auto-cartography 全流程）
+- [ ] **第10月 W4** Text-to-Map（自然语言→Mapbox 样式 JSON，组合 W2+W3 两份骨架）
 - [ ] **第11-12月** 自动报告生成 + 端到端平台
