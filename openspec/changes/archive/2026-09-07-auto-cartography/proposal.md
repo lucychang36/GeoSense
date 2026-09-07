@@ -1,6 +1,6 @@
 # Proposal：第10月 W3 自动标注 + 地图综合（auto_cartography）
 
-> 状态：**applied（2026-09-07，验证证据见 tasks.md；验收 4 条全过：selftest 10/10、demo 硬断言标签两两不重叠、ST_Simplify 对照含保拓扑语义发现、W2 引擎零改动）**
+> 状态：**archived（2026-09-07，验证证据见 tasks.md；验收 4 条全过：selftest 10/10、demo 硬断言标签两两不重叠、ST_Simplify 对照含保拓扑语义发现、W2 引擎零改动）**
 > 日期：2026-09-07
 > 决策：路线 A（引擎 + 真实数据 demo，不改现有消费方）+ 标注输出双格式（matplotlib + Mapbox symbol layer 骨架）
 
