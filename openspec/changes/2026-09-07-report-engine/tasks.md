@@ -35,3 +35,19 @@
 - **回归**：multi_agent demo 67.64% 不变（4→6 步含 report）；text_to_map selftest 14/14；report_engine selftest 复跑全过
 - **踩坑/偏差**：① ① 首版时相图用绝对路径（html 相对链接断）→ 拷进报告目录 ② Edit 工具静默失败坑再次大规模复现（multi_agent 三件 + main.py 首轮全没落盘 / 部分延迟可见）→ 全程 heredoc patch + 事后 assert 验证 ③ supervisor 汇总文案补 report 行（design D8 红旗⑤提前处理）④ W4 上轮 README 的 W4 行 ⏭ 残留（Edit 陷阱遗留）本轮回溯修正
 - **commit hash**：见 git log（本轮提交）
+
+## verify 阶段（2026-09-08）
+
+- 新增 `verify.py`（模式同前两次：direct 直调 + `--integration`；后者复用 scripts/e2e_test.py 自起 8010，不重复造轮子）
+- **direct 27/27 PASS**（~10s，stub 驱动零真实 LLM）：
+  - 1a 引擎 selftest 复跑 rc=0
+  - 1b QUAL_BANDS 边界三连（0.01→轻微 / 0.05→中等 / 0.50→显著）
+  - 1c 数字闸门：叙事 prompt 对 11.82 / 0.1182 / 226325 / 334583 零泄漏（时间/地名为设计允许）；stub 实收 prompt 同样零泄漏
+  - 1d generate_report stub 全流程：md 含真实数字（模板注入）+ 叙事进入
+  - 1e 宕机降级：narrative_skipped=True + ⚠ 提示 + 数字完整
+  - 2 接线 8 条：工具 10→11 / prompt 报告规则 / report_worker 短路 / 图线性插入 / state 三字段 / SSE+路由 / 前端卡片
+  - 3 路由净化直调 4 条：../ 穿越 400 / 白名单外后缀 400 / 不存在 404 / 真实文件 200（免起服直调 download_report，比 curl 更快且可进 CI）
+  - 4 产物 4 条：67.64% baseline 数字 / 相对路径 / 数字来源声明
+- **--integration 29/29 PASS**：e2e_test.py rc=0（18s）+ 7/7 汇总行
+- verify 自身两处修正（实现无恙）：① `ok = ... in {...} and qual.get("coverage")` 返回字符串 '较高'（truthy）致 sum() 崩——W4 verify 同款 and 链隐性返回值坑第二次出现，bool() 包裹 ② verify 产出的测试报告主动 unlink 清理（不加重 selftest 污染问题；复盘发现的 P3 缺陷仍挂账待修）
+- proposal 状态维持 applied，待用户确认后归档
