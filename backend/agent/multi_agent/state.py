@@ -35,6 +35,11 @@ class MultiAgentState(TypedDict, total=False):
     map_path: NotRequired[str]                     # 生成的图绝对路径
     map_bytes: NotRequired[int]                    # PNG 字节数（自检）
 
+    # ---- Report Agent 产出（第11月 W1）----
+    report_path: NotRequired[str]                  # Markdown 报告路径
+    report_title: NotRequired[str]                 # 报告标题（SSE/回答用）
+    narrative_skipped: NotRequired[bool]           # LLM 叙事失败降级标记（可见不静默）
+
     # ---- Supervisor 产出 ----
     final_answer: NotRequired[str]                 # 给用户的最终回复
 

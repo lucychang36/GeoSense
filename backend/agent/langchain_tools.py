@@ -164,6 +164,37 @@ def text_to_map_tool(query: str) -> str:
                 f"poi（兴趣点分类图）/ ndvi（NDVI 网格图）/ cog（卫星影像叠加）")
 
 
+# ---- 第11月 W1 报告生成：multi_agent 管道（规划→取数→分析→制图→报告）的薄封装 ----
+# 为什么封装整个图：报告需要"先分析再写"，让 ReAct planner 只做一次路由决策，
+# 子管道的步骤编排交给 multi_agent 图（职责分层，与 temporal_change_tool 直调单函数不同）。
+
+@tool
+def report_tool(query: str) -> str:
+    """端到端自动分析报告：输入自然语言问题（含时相对比/区域），内部运行多 Agent 管道
+    （规划→数据→变化检测→制图→报告），生成 Markdown + HTML 分析报告文件。
+    当用户要求「生成分析报告」「出一份报告」「写报告」等报告类请求时使用，
+    query 传用户原话（不要改写）。
+    返回 JSON 字段：title（报告标题）、change_ratio（变化占比）、report_path（md 路径）。"""
+    try:
+        from backend.agent.multi_agent import get_multi_agent
+        final = get_multi_agent().invoke({"user_query": query, "step_log": []})
+        if final.get("analysis_error"):
+            return json.dumps({
+                "error": f"[报告未生成] {final['analysis_error']}",
+                "change_ratio": None, "report_path": None,
+            }, ensure_ascii=False)
+        res = final.get("analysis_result") or {}
+        return json.dumps({
+            "title": final.get("report_title", "GeoSense 分析报告"),
+            "change_ratio": res.get("change_ratio"),
+            "change_px": res.get("change_px"),
+            "report_path": final.get("report_path", ""),
+            "narrative_skipped": final.get("narrative_skipped", False),
+        }, ensure_ascii=False)
+    except Exception as e:                               # noqa: BLE001 —— 错误转文本不炸 ReAct
+        return f"[工具错误] {type(e).__name__}: {e}。报告依赖 data/cogs/ 下的两期带日期 COG。"
+
+
 # LangGraph 使用的工具列表（W1 的 3 个原子工具 + W2 的 7 个领域工具 + SQL 工具）
 GIS_TOOLS = [calc_distance_tool, create_buffer_tool, transform_coord_tool]
 SPATIAL_TOOLS = [
@@ -177,5 +208,6 @@ SPATIAL_TOOLS = [
     spatial_sql_tool,
     temporal_change_tool,
     text_to_map_tool,
+    report_tool,
 ]
 

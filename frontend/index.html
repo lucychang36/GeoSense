@@ -85,6 +85,12 @@
             ⚙ 调用 {{ t.name }}({{ short(t.args) }})
           </div>
           <div class="step answer" v-if="answerOf(i)">💬 {{ answerOf(i) }}</div>
+          <div class="step report" v-if="reportOf(i)" style="background:#173042;border:1px solid #2a6f97;border-radius:8px;padding:8px 12px;margin-top:6px;font-size:13px;">
+            📄 {{ reportOf(i).title }}
+            <template v-if="reportOf(i).change_ratio != null">（变化占比 {{ (reportOf(i).change_ratio * 100).toFixed(2) }}%）</template>
+            <br><a v-if="reportOf(i).md_url" :href="reportOf(i).md_url" target="_blank" style="color:#6cb6ff;">⬇ 下载 Markdown 报告</a>
+            <span v-if="reportOf(i).narrative_skipped" style="color:#c98b3f;"> ⚠ 叙事降级</span>
+          </div>
         </div>
       </div>
 
@@ -253,7 +259,7 @@
     createApp({
       data() {
         return { input: '', messages: [], steps: [], answers: [], busy: false,
-                 t2mLayerIds: [], t2mSourceIds: [] };
+                 t2mLayerIds: [], t2mSourceIds: [], reports: [] };
       },
       methods: {
         short(args) {
@@ -261,6 +267,7 @@
         },
         stepsOf(i) { return this.steps[i] || []; },
         answerOf(i) { return this.answers[i] || ''; },
+        reportOf(i) { return this.reports[i] || null; },
         async send() {
           const q = this.input.trim();
           if (!q || this.busy) return;
@@ -314,6 +321,9 @@
           } else if (ev.event === 'style') {
             // 第10月 W4 Text-to-Map：text_to_map_tool 生成的样式自动上图
             this.applyStyle(ev.data);
+          } else if (ev.event === 'report') {
+            // 第11月 W1：report_tool 生成的分析报告 → 交付物卡片（可下载）
+            this.reports[idx] = ev.data;
           } else if (ev.event === 'answer') {
             this.answers[idx] += ev.data.delta;
           } else if (ev.event === 'error') {

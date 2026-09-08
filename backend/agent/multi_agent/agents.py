@@ -241,6 +241,32 @@ def cartography_node(state: dict) -> dict:
 
 
 # ===========================================================================
+# Report Agent（第11月 W1：管道第 5 个 worker）
+# ===========================================================================
+def report_worker(state: dict) -> dict:
+    """消费 analysis_result + map_path 生成分析报告。
+
+    边界（design D4）：analysis_error 存在时短路——不生成空报告
+    （回收第9月 safe_cog_path「缺字段不得溜进队列」的边界教训）。
+    引擎内部失败也不中断管道：记 step_log，supervisor 照常汇总。
+    """
+    log = list(state.get("step_log", []))
+    if state.get("analysis_error"):
+        log.append("report → 短路（analysis_error 存在，不生成空报告）")
+        return {"current_step": "supervisor", "step_log": log}
+    try:
+        from scripts.report_engine import generate_report
+        out = generate_report(state)
+        log.append(f"report → {Path(out['md_path']).name}（narrative_skipped={out['narrative_skipped']}）")
+        return {"report_path": out["md_path"], "report_title": out["title"],
+                "narrative_skipped": out["narrative_skipped"],
+                "current_step": "supervisor", "step_log": log}
+    except Exception as exc:  # noqa: BLE001 —— 报告失败不炸管道
+        log.append(f"report → 生成失败: {type(exc).__name__}: {exc}")
+        return {"current_step": "supervisor", "step_log": log}
+
+
+# ===========================================================================
 # Supervisor：集中汇总
 # ===========================================================================
 def supervisor_node(state: dict) -> dict:
@@ -254,11 +280,17 @@ def supervisor_node(state: dict) -> dict:
     if err:
         answer = f"❌ 分析失败：{err}\n\n执行步骤：\n" + "\n".join(f"  • {x}" for x in log)
     elif res.get("change_ratio") is not None:
+        report_line = ""
+        if state.get("report_path"):
+            report_line = (f"\n• 分析报告：**{state.get('report_title', '已生成')}**\n"
+                           f"  - Markdown：{state['report_path']}"
+                           f"{'（⚠ LLM 叙事降级，仅数据部分）' if state.get('narrative_skipped') else ''}\n")
         answer = (
             f"✅ 时相对比完成（{state.get('cog_a', '?')} vs {state.get('cog_b', '?')}）\n"
             f"• 方法：{res.get('method', '?')}（阈值 {res.get('threshold', '?')}）\n"
             f"• 变化占比：**{res['change_ratio']:.2%}**（{res.get('change_px', 0):,} / {res.get('valid_px', 0):,} 像素）\n"
             f"• 专题图：{map_path or '未生成'}\n"
+            f"{report_line}"
             f"\n执行链路：\n" + "\n".join(f"  • {x}" for x in log)
         )
     else:

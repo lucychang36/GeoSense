@@ -169,6 +169,17 @@ async def _stream(query: str):
                             # 全量下发（不经 result 的 [:200] 摘要路径），前端 addLayer 注入渲染
                             if isinstance(data, dict) and data.get("map_style"):
                                 yield _sse("style", data["map_style"])
+                            # 第11月 W1 报告生成：report_tool 结果 → 新事件类型 report
+                            # URL 型载荷（前端可直接下载），不经 result 的 [:200] 摘要路径
+                            if isinstance(data, dict) and data.get("report_path"):
+                                from pathlib import Path as _P
+                                fname = _P(data["report_path"]).name
+                                yield _sse("report", {
+                                    "title": data.get("title", "GeoSense 分析报告"),
+                                    "change_ratio": data.get("change_ratio"),
+                                    "md_url": f"/api/reports/{fname}" if fname else "",
+                                    "narrative_skipped": data.get("narrative_skipped", False),
+                                })
                         except (json.JSONDecodeError, TypeError):
                             pass
                         yield _sse("result", payload)
@@ -281,4 +292,22 @@ def model_poll_job(job_id: str):
 
 
 # 前端静态文件（必须最后注册 —— catch-all，放在最后才不会拦截 /api/* 路由）
+@app.get("/api/reports/{name}")
+def download_report(name: str):
+    """第11月 W1：报告交付物下载（md/html/png）。
+
+    路径净化同第9月 safe_cog_path 边界教训：剥目录只留文件名防 ../、
+    后缀白名单、is_file() 显式检查（Path("").name == "" 会拼出父目录本身）。
+    """
+    from fastapi.responses import FileResponse, JSONResponse
+    reports_dir = PROJECT_ROOT / "data" / "output" / "reports"
+    safe = Path(name).name
+    if not safe or safe != name or Path(safe).suffix.lower() not in {".md", ".html", ".png", ".jpg"}:
+        return JSONResponse({"error": "非法文件名"}, status_code=400)
+    f = reports_dir / safe
+    if not f.is_file():
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    return FileResponse(f)
+
+
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

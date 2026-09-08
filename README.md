@@ -195,7 +195,7 @@
 | W1 | 多 Agent 架构设计 | `backend/agent/multi_agent/`（state/agents/graph/__init__ 4 文件）+ `scripts/multi_agent_demo.py` | ✅ |
 | W2 | 自动符号化引擎 | `scripts/auto_symbology.py`（OpenSpec 变更 2026-09-04-auto-symbology-engine）+ `cartography_node` 接入 | ✅ |
 | W3 | 自动标注 + 地图综合 | `scripts/auto_cartography.py`（OpenSpec 变更 2026-09-07-auto-cartography；复用 W2 符号化） | ✅ |
-| W4 | Text-to-Map 原型 | （学习计划：`text_to_map.py` 自然语言→Mapbox 样式 JSON） | ⏭ |
+| W4 | Text-to-Map 原型 | `scripts/text_to_map.py`（OpenSpec 变更 2026-09-07-text-to-map；组合 W2+W3 双骨架） | ✅ |
 
 > **第10月 W1 关键数据**：多 Agent 架构设计 —— 4 Agent + Supervisor 的 LangGraph 协作链路，打通「自然语言问题 → 分工执行 → 集中汇总」。
 > ① **角色分工**：Planner（LLM 拆解用户问题 → 结构化 JSON 计划，temperature=0）/ Data（从 `data/cogs/` 选时相对 COG）/ Analysis（复用第8月 W2 `spectral_diff_change` 变化检测）/ Cartography（3 面板 matplotlib PNG 落盘 `data/output/multi_agent_maps/`）/ Supervisor（集中汇总 final_answer）
@@ -232,6 +232,23 @@
 > ⑤ **踩坑**：prompt 模板含 JSON schema 示例不能用 `.format()`（`{"error": ...}` 被当占位符抛 `KeyError '"error"'`）→ replace 拼接；match 表达式结构 `["match",["get",k],v0,c0,...]` 键在偶数位（断言索引写错被 selftest 抓住）
 > ⚠ **W4 诚实红旗**：① LLM 对训练外语义表述可能选错枚举（回退默认兜底，不根除）② planner 误触发/漏触发概率非零（工具描述+系统规则缓解）③ style 事件几十 KB 级全量（数据量大需改事件带 id + 前端拉取）④ raster_to_grid 是中心点采样近似（40×40 教学取舍，边缘锯齿）⑤ 浏览器渲染验证依赖网络+token 配额，不能进 CI（selftest 只测 JSON 结构）⑥ 实为 Text-to-Overlay（叠加层注入非整图 setStyle，保既有图层是有意取舍）
 > 快速验证：`.venv/bin/python scripts/text_to_map.py --selftest`（13 断言零 LLM）；CLI demo `python scripts/text_to_map.py`（3 条真实 NL 走 DeepSeek，~30s）；前端实测：起服务后聊天框发「给深圳全市做一张兴趣点图…」
+
+**阶段4 第11月：报告生成 + 系统集成 ✅（学习计划「终极交互」全链路打通）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | 报告生成引擎 | `scripts/report_engine.py` + `scripts/report_templates/`（OpenSpec 变更 2026-09-07-report-engine） | ✅ |
+| W2/W3 | 前后端集成 | `report_tool`（SPATIAL_TOOLS 10→11）+ SSE `report` 事件 + `/api/reports/{name}` 下载 + 前端交付物卡片 | ✅ |
+| W4 | 端到端测试 | `scripts/e2e_test.py`（起服 → NL → report 事件 → 下载 → 数字断言） | ✅ |
+
+> **第11月 W1 关键数据**：报告引擎 = 管道第 5 个 worker（multi_agent 图 planner→data→analysis→cartography→**report**→supervisor）。
+> ① **数字闸门（防幻觉核心，W4-D1 同款思想）**：`collect()` 把 analysis_result 定性投影为档位词（<2% 轻微 / <8% 中等 / ≥8% 显著），`llm_narrative` 的 prompt **只含定性词**——原始数字在结构上进不了 LLM；报告全部数字由 Jinja2 从 state 注入，selftest 断言 prompt 泄漏集为空
+> ② **双模板同 context（零新依赖）**：`report.md.j2` + `report.html.j2` 各自直出（不引 markdown 库）；md 第一交付物（路线 C，用户确认；PDF 留可选增强）
+> ③ **叙事降级可见**：LLM 宕机 → `narrative_skipped` 标记 + 报告头部 ⚠ 提示，数据部分完整（selftest 模拟宕机验证）
+> ④ **两处边界回收**：report worker 在 `analysis_error` 时短路不生成空报告（safe_cog_path 教训）；时相图拷进报告目录用相对链接（绝对路径会断 html）
+> ⑤ **实测**：selftest 10/10（零网络零 LLM，stub 驱动）；CLI demo 真实管道 67.64% 与历史一致 + DeepSeek 叙事 + Mapbox 底图落盘；**e2e 7/7**——chat 一句「对比深圳湾 2023 和 2025 的水域变化，并生成分析报告」→ planner 自主路由 temporal_change_tool + report_tool（11s）→ report 事件 → 下载 200 → md 含 67.64%（数字闸门端到端）→ ../ 穿越负例被拒
+> ⚠ **W1 诚实红旗**：① LLM 定性解读仍可能错误归因（闸门只保数字不保观点）② 双模板内容漂移（selftest 章节一致断言缓解）③ report_tool 单次 30-60s（planner+分析+叙事三重延迟）④ Mapbox Static 配额（selftest 不触网）⑤ PDF 未做（路线 C 有意取舍）
+> 快速验证：`.venv/bin/python scripts/report_engine.py --selftest`（10 断言零 LLM）；端到端 `.venv/bin/python scripts/e2e_test.py`（1-3 分钟，依赖 DeepSeek）
 
 ## 项目结构
 
@@ -313,11 +330,16 @@ GeoSense/
 │   └── async_inference.py   # 第9月 W3：异步推理（分块推理 Window+overlap + 任务队列 + 合成大图内存演示）
 │   └── cyanobacteria_monitor.py # 第9月 W4：蓝藻监测原型（U-Net 水体 + NIR 抬升藻华代理 + 两期对比）
 │   └── multi_agent_demo.py   # 第10月 W1：多 Agent 协作端到端 demo（4 Agent + Supervisor + --trace 逐步看 state）
-│   └── auto_symbology.py    # 第10月 W2：自动符号化引擎（数据类型→ColorBrewer 配色 + 语义约定 + Mapbox 骨架；--selftest 8 断言）
+│   ├── auto_symbology.py    # 第10月 W2：自动符号化引擎（数据类型→ColorBrewer 配色 + 语义约定 + Mapbox 骨架；--selftest 8 断言）
+│   ├── auto_cartography.py  # 第10月 W3：自动标注 + 地图综合（8 方位避让 + DP 简化；--selftest 10 断言）
+│   ├── text_to_map.py       # 第10月 W4：Text-to-Map（NL→IR→Style Spec v8 组装；--selftest 14 断言）
+│   ├── report_engine.py     # 第11月 W1：报告生成引擎（数字闸门 + Jinja2 双模板 + 图表；--selftest 10 断言）
+│   ├── report_templates/    # 第11月 W1：报告双模板（report.md.j2 / report.html.j2）
+│   └── e2e_test.py          # 第11月 W4：端到端测试（起服 → NL → report 事件 → 下载断言）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
-│   └── index.html          # Vue3 + MapboxGL 对话界面（底图 POI 聚合 + 区边界高亮 + 查询结果上图）
+│   └── index.html          # Vue3 + MapboxGL 对话界面（POI 聚合 + 区界高亮 + t2m 样式注入 + 报告交付物卡片）
 ├── docker/                 # 容器构建（补课）
 │   └── Dockerfile.postgis  # PostGIS + pgvector 自建镜像
 ├── docker-compose.yml      # 数据基础设施（PostgreSQL 16 + PostGIS）
@@ -445,6 +467,12 @@ curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/
 # W4 前端实测（起服务后浏览器 http://127.0.0.1:8000/，聊天框发）：
 #   「给深圳全市做一张兴趣点图，公园按植被绿色显示，并标注地铁站」→ style 事件自动上图
 
+# 6.11 第11月：自动报告引擎 + 端到端测试
+.venv/bin/python scripts/report_engine.py --selftest      # 报告引擎自测（10 断言，零 LLM 零网络）
+.venv/bin/python scripts/report_engine.py                 # 真实管道 → data/output/reports/（md+html+图表，~1min）
+.venv/bin/python scripts/e2e_test.py                      # 端到端：起服 8010 → NL → report 事件 → 下载断言（1-3min）
+# 前端实测（起服务后聊天框发）：「对比深圳湾 2023 和 2025 的水域变化，并生成分析报告」→ 报告卡片可下载
+
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 # 浏览器打开 http://127.0.0.1:8000/
@@ -478,6 +506,7 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 | 多 Agent 编排 | LangGraph StateGraph + TypedDict 共享状态 | 第10月W1：4 Agent + Supervisor（planner→data→analysis→cartography→supervisor；LLM 拆解 + 确定性 worker + 失败兜底；非消息总线 = 可观测可回滚） |
 | 自动符号化 | ColorBrewer 规则引擎（零 LLM） | 第10月W2：auto_symbology（4 类数据→4 类 palette + 语义约定层 + matplotlib/Mapbox 双格式；W4 Text-to-Map 复用） |
 | 自动标注 + 地图综合 | 8 方位候选避让 / Douglas-Peucker 缩放自适应 | 第10月W3：auto_cartography（包围盒碰撞 + 优先级贪心 + tolerance 随 zoom 换算 + Mapbox symbol-sort-key；ST_Simplify 保拓扑逐点一致实证） |
+| 报告生成 | Jinja2 双模板 + 数字闸门 | 第11月W1：report_engine（LLM 只收定性档位、数字全由模板注入防幻觉 + matplotlib 图表 + Mapbox Static 底图 + 降级可见；e2e 7/7） |
 
 ## 里程碑
 
@@ -499,5 +528,6 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第10月 W1** 多 Agent 架构设计（4 Agent + Supervisor LangGraph StateGraph：Planner LLM 拆解 + Data/Analysis/Cartography 确定性 worker + Supervisor 集中汇总；共享 State 非消息总线；Planner 失败规则回退；实测 67.64% 与第8月 baseline 吻合 / 4 步 4.82s / 3 面板专题图 543KB；红旗：何时不要多 Agent + 线性简化已标出）
 - [x] **第10月 W2** 自动符号化引擎（`auto_symbology.py` ~330 行纯函数零 LLM：4 类数据→4 类 ColorBrewer palette 决策规则 + 语义约定层（水=蓝/植=绿/城=灰/变化=红）+ 双格式输出（matplotlib Colormap + Mapbox match/interpolate 骨架）；--selftest 8/8 PASS；三联 demo YlGnBu/semantic/RdBu 互异；cartography_node 接入回归 67.64% 不变；教学发现：NDVI 单景数据性质（跨 0）≠ 制图语义（单极），force_kind 注入领域知识；OpenSpec 变更 2026-09-04-auto-symbology-engine 全流程）
 - [x] **第10月 W3** 自动标注 + 地图综合（`auto_cartography.py` 纯函数零 LLM：8 方位候选避让 + CJK 包围盒碰撞 + 优先级贪心 + DP 简化 tolerance 随 zoom 换算 + min-area 过滤 + Mapbox symbol-sort-key 骨架；--selftest 10/10 PASS；真实 OSM 388 地铁 z10 丢弃率 72% / z12 硬断言标签两两不重叠；ST_Simplify 对照实验发现保拓扑 vs 无拓扑语义分歧（z10 Hausdorff 65.3m / PreserveTopology 逐点一致 0）；数据源切换 OSM→PostGIS 区界（out center 无多边形）；OpenSpec 变更 2026-09-07-auto-cartography 全流程）
-- [ ] **第10月 W4** Text-to-Map（自然语言→Mapbox 样式 JSON，组合 W2+W3 两份骨架）
-- [ ] **第11-12月** 自动报告生成 + 端到端平台
+- [x] **第10月 W4** Text-to-Map（意图-渲染分层：LLM 枚举 IR + 确定性组装 Style Spec v8；三主题 CLI demo 零回退 + 浏览器实测；OpenSpec 变更 2026-09-07-text-to-map 全流程）
+- [x] **第11月 W1-W4** 报告生成 + 系统集成（数字闸门：LLM 只收定性档位、数字全由 Jinja2 注入；multi_agent 第 5 个 worker + report_tool + SSE report 事件 + 下载路由 + 前端卡片；e2e_test.py 7/7——终极交互「NL→分析→制图→报告」全链路打通）
+- [ ] **第12月** 性能优化 + 文档 + 开源准备

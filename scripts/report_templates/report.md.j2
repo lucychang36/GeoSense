@@ -1,0 +1,50 @@
+# {{ title }}
+
+> GeoSense 自动报告 · 生成时间 {{ generated_at }} · 区域 {{ region }}
+{% if narrative_skipped %}
+> ⚠ 自动叙事生成失败，以下仅含数据部分（降级可见，不静默）。
+{% endif %}
+
+## 概述
+
+{{ region }}在监测期 **{{ period }}** 内，变化像元占比 **{{ metrics.change_ratio_pct }}%**（定性档位：{{ qualitative.magnitude }}，{{ qualitative.direction }}趋势），有效观测覆盖率 {{ metrics.valid_pct }}%。
+
+{% if narrative %}
+## 解读
+
+{{ narrative }}
+{% endif %}
+
+## 核心指标
+
+| 指标 | 数值 |
+|------|------|
+| 变化占比 | {{ metrics.change_ratio_pct }}% |
+| 变化像元 | {{ metrics.change_px }} |
+| 有效像元 | {{ metrics.valid_px }} |
+| 有效覆盖率 | {{ metrics.valid_pct }}% |
+| 检测方法 | {{ metrics.method }}（阈值 {{ metrics.threshold }}） |
+
+## 图表
+
+![变化检测统计]({{ charts.stats }})
+{% if charts.basemap %}
+![专题底图]({{ charts.basemap }})
+{% endif %}
+{% if map_path %}
+![时相变化图]({{ map_path }})
+{% endif %}
+
+## 方法说明
+
+- 数据源：data/cogs/ 下两期 Sentinel-2 风格 COG（{{ period }}）
+- 检测方法：{{ metrics.method }}，差异阈值 {{ metrics.threshold }}
+- 变化定义：两期光谱差分超过阈值的像元记为变化；云污染与无效观测已剔除
+- 数字来源：全部指标由检测代码直接产出并注入本模板，未经任何语言模型转写
+
+## 附录
+
+{% for d in deliverables %}
+- [{{ d }}]({{ d }})
+{% endfor %}
+- [Markdown 报告]({{ report_id }}.md) · [HTML 报告]({{ report_id }}.html)

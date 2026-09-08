@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+         max-width: 820px; margin: 32px auto; padding: 0 20px; color: #1e2a35; line-height: 1.7; }
+  h1 { font-size: 22px; border-bottom: 2px solid #2a6f97; padding-bottom: 8px; }
+  h2 { font-size: 17px; color: #2a6f97; margin-top: 28px; }
+  .meta { color: #6b7a88; font-size: 13px; }
+  .warn { background: #fdf3e3; border-left: 4px solid #c98b3f; padding: 8px 14px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid #d6dee5; padding: 6px 12px; text-align: left; }
+  th { background: #eef4f8; }
+  img { max-width: 100%; border: 1px solid #d6dee5; border-radius: 6px; margin: 6px 0; }
+  .narr { background: #f4f8fa; border-left: 4px solid #2a6f97; padding: 10px 16px; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>{{ title }}</h1>
+<p class="meta">GeoSense 自动报告 · 生成时间 {{ generated_at }} · 区域 {{ region }}</p>
+{% if narrative_skipped %}<p class="warn">⚠ 自动叙事生成失败，以下仅含数据部分（降级可见，不静默）。</p>{% endif %}
+
+<h2>概述</h2>
+<p>{{ region }}在监测期 <b>{{ period }}</b> 内，变化像元占比 <b>{{ metrics.change_ratio_pct }}%</b>（定性档位：{{ qualitative.magnitude }}，{{ qualitative.direction }}趋势），有效观测覆盖率 {{ metrics.valid_pct }}%。</p>
+
+{% if narrative %}
+<h2>解读</h2>
+<p class="narr">{{ narrative }}</p>
+{% endif %}
+
+<h2>核心指标</h2>
+<table>
+<tr><th>指标</th><th>数值</th></tr>
+<tr><td>变化占比</td><td><b>{{ metrics.change_ratio_pct }}%</b></td></tr>
+<tr><td>变化像元</td><td>{{ metrics.change_px }}</td></tr>
+<tr><td>有效像元</td><td>{{ metrics.valid_px }}</td></tr>
+<tr><td>有效覆盖率</td><td>{{ metrics.valid_pct }}%</td></tr>
+<tr><td>检测方法</td><td>{{ metrics.method }}（阈值 {{ metrics.threshold }}）</td></tr>
+</table>
+
+<h2>图表</h2>
+<img src="{{ charts.stats }}" alt="变化检测统计">
+{% if charts.basemap %}<img src="{{ charts.basemap }}" alt="专题底图">{% endif %}
+{% if map_path %}<img src="{{ map_path }}" alt="时相变化图">{% endif %}
+
+<h2>方法说明</h2>
+<ul>
+<li>数据源：data/cogs/ 下两期 COG（{{ period }}）</li>
+<li>检测方法：{{ metrics.method }}，差异阈值 {{ metrics.threshold }}</li>
+<li>变化定义：两期光谱差分超过阈值的像元记为变化；云污染与无效观测已剔除</li>
+<li>数字来源：全部指标由检测代码直接产出并注入本模板，未经任何语言模型转写</li>
+</ul>
+
+<h2>附录</h2>
+<ul>
+{% for d in deliverables %}<li><a href="{{ d }}">{{ d }}</a></li>
+{% endfor %}
+<li><a href="{{ report_id }}.md">Markdown 报告</a> · <a href="{{ report_id }}.html">HTML 报告</a></li>
+</ul>
+</body>
+</html>

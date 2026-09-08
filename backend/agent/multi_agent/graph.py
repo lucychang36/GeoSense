@@ -19,6 +19,7 @@ from .agents import (
     cartography_node,
     data_node,
     planner_node,
+    report_worker,
     supervisor_node,
 )
 from .state import MultiAgentState
@@ -31,14 +32,16 @@ def build_multi_agent_graph():
     g.add_node("data", data_node)
     g.add_node("analysis", analysis_node)
     g.add_node("cartography", cartography_node)
+    g.add_node("report", report_worker)          # 第11月 W1：管道第 5 个 worker
     g.add_node("supervisor", supervisor_node)
 
-    # W1 顺序图：planner→data→analysis→cartography→supervisor→END
+    # 顺序图：planner→data→analysis→cartography→report→supervisor→END
     g.add_edge(START, "planner")
     g.add_edge("planner", "data")
     g.add_edge("data", "analysis")
     g.add_edge("analysis", "cartography")
-    g.add_edge("cartography", "supervisor")
+    g.add_edge("cartography", "report")
+    g.add_edge("report", "supervisor")
     g.add_edge("supervisor", END)
     return g.compile()
 
