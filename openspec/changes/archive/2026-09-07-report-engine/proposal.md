@@ -1,6 +1,6 @@
 # Proposal：report-engine（第11月 W1 报告生成引擎 + W2/W3/W4 集成收官）
 
-> 状态：**applied（2026-09-08，selftest 10/10 + e2e 7/7 + 回归通过，证据见 tasks.md）**
+> 状态：**archived（2026-09-08，verify direct 27/27 + integration 29/29；数字闸门零泄漏实证）**
 
 ## 背景
 
