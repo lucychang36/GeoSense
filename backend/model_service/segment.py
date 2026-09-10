@@ -50,7 +50,7 @@ def segment_cog(cog_path: str, weight: str = "unet_finetuned.pt",
 
     model = get_unet(weight)
     x = torch.from_numpy(bands[None]).to(get_device())  # (1,4,H,W)
-    with torch.no_grad():
+    with torch.inference_mode():   # 第12月W1：no_grad 的严格超集升级（省 version counter/view tracking）
         pred = infer_full(model, x, get_device())        # (H,W) int64
 
     # 类别面积统计（0=水 1=城 2=植）

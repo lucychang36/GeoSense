@@ -250,6 +250,25 @@
 > ⚠ **W1 诚实红旗**：① LLM 定性解读仍可能错误归因（闸门只保数字不保观点）② 双模板内容漂移（selftest 章节一致断言缓解）③ report_tool 单次 30-60s（planner+分析+叙事三重延迟）④ Mapbox Static 配额（selftest 不触网）⑤ PDF 未做（路线 C 有意取舍）
 > 快速验证：`.venv/bin/python scripts/report_engine.py --selftest`（10 断言零 LLM）；端到端 `.venv/bin/python scripts/e2e_test.py`（1-3 分钟，依赖 DeepSeek）
 
+**阶段4 第12月：优化 + 开源 + 求职 🚧（W1 完成）**
+
+| 周 | 主题 | 交付物 | 状态 |
+|----|------|--------|------|
+| W1 | 性能优化（基准先行 + 三层） | `scripts/bench.py` + `scripts/tile_cache.py` + 推理层/传输层优化（OpenSpec 变更 2026-09-10-perf-optimization） | ✅ |
+| W2 | 文档完善 + 开源准备 | （学习计划） | ⏭ |
+| W3 | 技术博客 2-3 篇 | （学习计划） | ⏭ |
+| W4 | 项目展示视频 + 求职准备 | （学习计划） | ⏭ |
+
+> **第12月 W1 关键数据（bench 前后对比，同环境相对值）**：
+> ① **基准先行**：`bench.py` 4 项基准（瓦片冷/热、推理 fp32/fp16、模型冷启动、载荷 gzip），基线落盘后才动代码
+> ② **瓦片磁盘缓存 136×**：热路径 13.6ms → 0.1ms——键 = `md5(路径)+mtime_ns+z/x/y+波段`，COG 覆盖自动失效（失效语义实测：mtime 变 → 键变）；LRU 512 文件按 atime 淘汰；缓存层异常 fail-open 降级直读
+> ③ **fp16 负收益回退（负结果也是结论）**：稳态仅快 ~18%（6.6→5.4ms，绝对值省 1.2ms）但首次 kernel 编译慢 5×（245→1223ms）、argmax 一致性 0.9994——百分比收益 ≠ 绝对收益，不采纳
+> ④ **inference_mode + warmup**：`no_grad` 严格超集升级 ×2 处；warmup 把 MPS kernel 编译（~245ms）从首个用户请求移到启动时（代价：加载 143→318ms，语义上这笔钱本来就该启动付）
+> ⑤ **传输层**：gzip 后区界 geojson 414KB→81.5KB（×0.197）；`/info` 加 ETag/304（304 实测过）；gzip×SSE 事件完整性 e2e 7/7 兜底
+> ⑥ **CDN 语义教学**：Cache-Control（强缓存「别再问」）+ ETag/304（协商缓存「问了没变别传」）+ 内容寻址（键即版本）= CDN 全部语义内核，上 CDN 只是换分发点
+> ⚠ **W1 诚实红旗**：① fp16 回退——MPS 上小模型半精度收益被编译开销吃掉 ② mtime 键是失效最简解，「同 mtime 覆盖」理论漏网（文档化取舍）③ bench 权威数字需干净终端跑（沙箱 sitecustomize 干扰）④ inference_mode 稳态收益 ~3% 在噪声范围内（升级价值在语义与未来收益）⑤ warmup 推高加载时间，是转移成本不是消除成本
+> 快速验证：`.venv/bin/python scripts/bench.py --save after`（自动与 baseline.json 对比；瓦片缓存热路径应毫秒级）
+
 ## 项目结构
 
 ```
@@ -335,7 +354,9 @@ GeoSense/
 │   ├── text_to_map.py       # 第10月 W4：Text-to-Map（NL→IR→Style Spec v8 组装；--selftest 14 断言）
 │   ├── report_engine.py     # 第11月 W1：报告生成引擎（数字闸门 + Jinja2 双模板 + 图表；--selftest 10 断言）
 │   ├── report_templates/    # 第11月 W1：报告双模板（report.md.j2 / report.html.j2）
-│   └── e2e_test.py          # 第11月 W4：端到端测试（起服 → NL → report 事件 → 下载断言）
+│   ├── e2e_test.py          # 第11月 W4：端到端测试（起服 → NL → report 事件 → 下载断言）
+│   ├── bench.py             # 第12月 W1：性能基准（瓦片冷/热、推理 fp32/fp16、冷启动、gzip；--save baseline/after）
+│   └── tile_cache.py        # 第12月 W1：瓦片磁盘 LRU（键含 mtime_ns 防失效；fail-open 降级）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -472,6 +493,9 @@ curl -X POST http://127.0.0.1:8000/api/model/jobs -H 'Content-Type: application/
 .venv/bin/python scripts/report_engine.py                 # 真实管道 → data/output/reports/（md+html+图表，~1min）
 .venv/bin/python scripts/e2e_test.py                      # 端到端：起服 8010 → NL → report 事件 → 下载断言（1-3min）
 # 前端实测（起服务后聊天框发）：「对比深圳湾 2023 和 2025 的水域变化，并生成分析报告」→ 报告卡片可下载
+# 6.12 第12月W1：性能基准（先 baseline 后 after 自动对比；权威数字请在干净终端跑）
+.venv/bin/python scripts/bench.py --save baseline    # 优化前基线 → data/output/bench/baseline.json
+.venv/bin/python scripts/bench.py --save after       # 优化后 → 自动打印 vs baseline 对比表
 
 # 5. 启动 Web 界面（第3月W4）
 uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
@@ -530,4 +554,5 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第10月 W3** 自动标注 + 地图综合（`auto_cartography.py` 纯函数零 LLM：8 方位候选避让 + CJK 包围盒碰撞 + 优先级贪心 + DP 简化 tolerance 随 zoom 换算 + min-area 过滤 + Mapbox symbol-sort-key 骨架；--selftest 10/10 PASS；真实 OSM 388 地铁 z10 丢弃率 72% / z12 硬断言标签两两不重叠；ST_Simplify 对照实验发现保拓扑 vs 无拓扑语义分歧（z10 Hausdorff 65.3m / PreserveTopology 逐点一致 0）；数据源切换 OSM→PostGIS 区界（out center 无多边形）；OpenSpec 变更 2026-09-07-auto-cartography 全流程）
 - [x] **第10月 W4** Text-to-Map（意图-渲染分层：LLM 枚举 IR + 确定性组装 Style Spec v8；三主题 CLI demo 零回退 + 浏览器实测；OpenSpec 变更 2026-09-07-text-to-map 全流程）
 - [x] **第11月 W1-W4** 报告生成 + 系统集成（数字闸门：LLM 只收定性档位、数字全由 Jinja2 注入；multi_agent 第 5 个 worker + report_tool + SSE report 事件 + 下载路由 + 前端卡片；e2e_test.py 7/7——终极交互「NL→分析→制图→报告」全链路打通）
-- [ ] **第12月** 性能优化 + 文档 + 开源准备
+- [x] **第12月 W1** 性能优化（基准先行：bench.py 4 项基线 → 瓦片磁盘缓存 136× / inference_mode + warmup / fp16 负收益回退 / gzip×5 + ETag/304；OpenSpec 变更 2026-09-10-perf-optimization）
+- [ ] **第12月 W2-W4** 文档完善 + 开源准备 / 技术博客 / 展示视频 + 求职准备

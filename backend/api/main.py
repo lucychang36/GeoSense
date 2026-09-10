@@ -32,6 +32,13 @@ from ..model_service import (  # noqa: E402  （启动时不强 load，首次请
 
 app = FastAPI(title="GeoSense API", version="0.1.0")
 
+# 第12月W1：gzip 压缩传输——>1KB 响应（区界 geojson 414KB→81KB、报告 md）体积约降 5 倍
+# （bench B4 实测）。SSE 属 StreamingResponse：gzip 中间件逐块压缩不整体缓冲，
+# 事件完整性由 e2e 回归兜底验证。
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 

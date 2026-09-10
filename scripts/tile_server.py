@@ -17,14 +17,16 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
-from backend.data.cog_reader import cog_info, read_partial_png, read_tile_png
+from backend.data.cog_reader import cog_info, read_partial_png
+from scripts.tile_cache import read_tile_png_cached
 from rio_tiler.errors import TileOutsideBounds
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -62,13 +64,23 @@ def index() -> dict:
 
 
 @app.get("/info")
-def info(path: str | None = None) -> dict:
-    """返回 COG 元信息（bounds/center/minzoom/maxzoom/波段），前端据此配置图层。"""
+def info(path: str | None = None, request: Request = None) -> Response:
+    """返回 COG 元信息（bounds/center/minzoom/maxzoom/波段），前端据此配置图层。
+
+    第12月W1 协商缓存教学：Cache-Control max-age 是「别再问」，ETag/304 是
+    「问了但没变就别传」——元信息体积小但请求频繁，304 省的是重复传输。
+    ETag = md5(mtime_ns + size)：源文件任何变化都会换指纹，语义与瓦片缓存键一致。
+    """
     cog = _resolve_cog(path)
+    p = Path(cog)
+    etag = 'W/"%s"' % hashlib.md5(f"{p.stat().st_mtime_ns}-{p.stat().st_size}".encode()).hexdigest()[:16]
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
     try:
-        return cog_info(cog)
+        data = cog_info(cog)
     except Exception as exc:  # noqa: BLE001 —— 接口层兜底
         raise HTTPException(500, f"{type(exc).__name__}: {exc}") from exc
+    return JSONResponse(data, headers={"ETag": etag})
 
 
 @app.get("/tiles/{z}/{x}/{y}.png")
@@ -82,7 +94,9 @@ def tile(z: int, x: int, y: int, path: str | None = None,
     cog = _resolve_cog(path)
     band_tuple = tuple(int(b) for b in bands.split(",")) if bands else None
     try:
-        png = read_tile_png(cog, z, x, y, bands=band_tuple)
+        # 第12月W1：瓦片走磁盘缓存（键含源文件 mtime_ns，COG 覆盖自动失效；
+        # 缓存层异常 fail-open 降级直读，见 scripts/tile_cache.py）
+        png = read_tile_png_cached(cog, z, x, y, bands=band_tuple)
     except TileOutsideBounds:
         raise HTTPException(404, "瓦片超出影像范围")
     except Exception as exc:  # noqa: BLE001

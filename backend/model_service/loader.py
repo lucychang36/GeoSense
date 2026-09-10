@@ -42,6 +42,11 @@ def get_unet(weight: str = "unet_finetuned.pt") -> UNet:
         model.load_state_dict(torch.load(ckpt, map_location=get_device()))
         model.eval()
         _loaded[key] = model
+        # 第12月W1 warmup：MPS 首次前向含 kernel 编译（实测 ~245ms vs 稳态 ~6ms），
+        # 在加载时空跑一次，把这笔一次性开销从首个用户请求移到启动时。
+        # 注意：不用 fp16——bench 实测稳态仅快 ~18%（6.6→5.4ms），但首次编译慢 5×，负收益回退。
+        with torch.inference_mode():
+            model(torch.rand(1, 4, 64, 64, device=get_device()))
     return _loaded[key]  # type: ignore[return-value]
 
 

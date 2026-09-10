@@ -69,7 +69,7 @@ def change_cog(cog_a: str, cog_b: str, method: str = "postclass",
         change_mask = spectral_diff_change(bands_a, bands_b, threshold=threshold)
     else:  # postclass
         model = get_unet(weight)
-        with torch.no_grad():
+        with torch.inference_mode():   # 第12月W1：no_grad 的严格超集升级（省 version counter/view tracking）
             xa = torch.from_numpy(bands_a[None]).to(get_device())
             xb = torch.from_numpy(bands_b[None]).to(get_device())
             pred_a = infer_full(model, xa, get_device())
