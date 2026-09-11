@@ -62,16 +62,28 @@ def setup_cjk_font() -> None:
 # change_ratio 档位：代码化的映射规则，LLM 输入只有档位词（design D1）
 QUAL_BANDS: list[tuple[float, str]] = [(0.02, "轻微"), (0.08, "中等"), (float("inf"), "显著")]
 
+# 专题净变化面积档位（km²，index_change 方法专用；同 D1 代码化思想）
+AREA_BANDS: list[tuple[float, str]] = [(0.5, "轻微"), (2.0, "中等"), (float("inf"), "显著")]
+
 
 def qualitative_projection(analysis_result: dict) -> dict:
-    """analysis_result → 定性档位。返回值不含任何原始数值，作为 LLM 叙事的唯一输入。"""
+    """analysis_result → 定性档位。返回值不含任何原始数值，作为 LLM 叙事的唯一输入。
+
+    index_change 结果（含 net_km2）额外给出方向与面积档位；旧 spectral_diff
+    state 无 net_km2 → 输出与历史版本逐字节一致（向后兼容，selftest 断言）。
+    """
     ratio = float(analysis_result.get("change_ratio", 0.0))
     magnitude = next(label for hi, label in QUAL_BANDS if ratio < hi)
-    return {
+    qual = {
         "direction": "增加",          # spectral_diff 差分为正 → 变化像元增多（语义：扰动增强）
         "magnitude": magnitude,
         "coverage": "较高" if float(analysis_result.get("valid_pct", 0)) > 0.5 else "有限",
     }
+    if "net_km2" in analysis_result:
+        net = float(analysis_result["net_km2"])
+        qual["direction"] = "增加" if net >= 0 else "减少"
+        qual["area"] = next(label for hi, label in AREA_BANDS if abs(net) < hi)
+    return qual
 
 
 def build_narrative_prompt(qual: dict, period: str, region: str) -> str:
@@ -79,12 +91,14 @@ def build_narrative_prompt(qual: dict, period: str, region: str) -> str:
 
     selftest 会断言本函数输出不含 analysis_result 的原始数字（数字闸门）。
     """
+    area_line = f"净变化面积：{qual['area']}\n" if qual.get("area") else ""
     return (
         "你是遥感分析报告的撰写者。请根据以下定性结论写一段 2-3 句的中文解读，"
         "面向非遥感专业的读者，说明变化可能的原因类别（如潮位/季节/人类活动），"
         "并给出一句话的后续建议。\n"
         f"区域：{region}\n监测期：{period}\n"
         f"变化幅度：{qual['magnitude']}（{qual['direction']}趋势）\n"
+        f"{area_line}"
         f"有效观测覆盖：{qual['coverage']}\n"
         "注意：不要编造任何具体数值、面积或百分比；不要使用 markdown。"
     )
@@ -197,28 +211,41 @@ def collect(state: dict) -> dict:
         m = re.search(r"(\d{8})", name)
         return f"{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:]}" if m else name
 
-    region = "深圳湾"
+    # 专题参数化（2026-09-11 thematic-index-change）：region/theme 从 analysis_result
+    # 读取；旧 state 无这些字段 → 回落深圳湾/水域，标题与历史版本逐字节一致
+    region = res.get("region_label") or "深圳湾"
+    theme_label = res.get("theme_label") or "水域"
     period = f"{_pretty(cog_a)} → {_pretty(cog_b)}"
     qual = qualitative_projection(res)
+    metrics = {
+        "change_ratio_pct": round(res.get("change_ratio", 0.0) * 100, 2),
+        "change_px": res.get("change_px", 0),
+        "valid_px": res.get("valid_px", 0),
+        "valid_pct": round(res.get("valid_pct", 0.0) * 100, 1),
+        "method": res.get("method", "?"),
+        "threshold": res.get("threshold", "?"),
+    }
+    if res.get("method") == "index_change":
+        metrics.update({
+            "theme_label": theme_label,
+            "gain_km2": res.get("gain_km2", 0.0),
+            "loss_km2": res.get("loss_km2", 0.0),
+            "net_km2": res.get("net_km2", 0.0),
+        })
     return {
         "report_id": f"report_{time.strftime('%Y%m%d_%H%M%S')}",
-        "title": f"深圳湾水域变化分析报告（{_pretty(cog_a)} → {_pretty(cog_b)}）",
+        "title": f"{region}{theme_label}变化分析报告（{_pretty(cog_a)} → {_pretty(cog_b)}）",
         "region": region,
+        "theme_label": theme_label,
         "period": period,
         "generated_at": time.strftime("%Y-%m-%d %H:%M"),
-        "metrics": {
-            "change_ratio_pct": round(res.get("change_ratio", 0.0) * 100, 2),
-            "change_px": res.get("change_px", 0),
-            "valid_px": res.get("valid_px", 0),
-            "valid_pct": round(res.get("valid_pct", 0.0) * 100, 1),
-            "method": res.get("method", "?"),
-            "threshold": res.get("threshold", "?"),
-        },
+        "metrics": metrics,
         "qualitative": qual,
         "narrative": None,                # generate_report 里填充
         "narrative_skipped": False,
         "map_path": state.get("map_path", ""),
-        "bbox": [113.88, 22.46, 114.1, 22.6],   # 深圳湾范围（与 W4 ndvi 一致）
+        # bbox 优先取 analysis_result（真实下载时随影像入库）；缺省深圳湾（历史行为）
+        "bbox": res.get("bbox") or [113.88, 22.46, 114.1, 22.6],
         "deliverables": [],
     }
 
@@ -360,6 +387,41 @@ def selftest() -> int:
     check("降级报告章节完整（缺解读）", "解读" not in hs2 and {"概述", "核心指标", "图表", "方法说明", "附录"} <= hs2,
           str(sorted(hs2)))
 
+
+    # 5. 专题参数化（thematic-index-change）：index_change state → region/theme 注入 + 面积闸门
+    themed_state = {
+        "cog_a": "zhengzhou_real_20230615.tif",
+        "cog_b": "zhengzhou_real_20250618.tif",
+        "analysis_result": {
+            "method": "index_change", "theme": "builtup", "theme_label": "建筑用地",
+            "region_label": "郑州高新区", "threshold": 0.0,
+            "change_px": 15200, "valid_px": 90200, "change_ratio": 0.1685,
+            "valid_pct": 0.8111, "gain_px": 15200, "loss_px": 0,
+            "gain_km2": 2.41, "loss_km2": 0.0, "net_km2": 2.41,
+            "pixel_area_km2": 1.586e-4,
+        },
+        "map_path": "",
+    }
+    qual3 = qualitative_projection(themed_state["analysis_result"])
+    check("专题档位：direction=增加 + area=显著",
+          qual3["direction"] == "增加" and qual3.get("area") == "显著", str(qual3))
+    prompt3 = build_narrative_prompt(qual3, "2023-06-15 → 2025-06-18", "郑州高新区")
+    leaked3 = [tok for tok in ("2.41", "0.1685", "15200", "90200") if tok in prompt3]
+    check("专题闸门：面积只有档位词，原始数字不进 prompt", not leaked3, f"泄漏={leaked3}")
+    out3 = generate_report(themed_state, llm_client=_StubLLM(), make_charts=False)
+    md3 = Path(out3["md_path"]).read_text(encoding="utf-8")
+    check("专题标题注入（郑州高新区建筑用地）",
+          out3["title"].startswith("郑州高新区建筑用地变化分析报告"), out3["title"])
+    check("专题面积行注入（新增 2.41 km²）", "新增面积" in md3 and "2.41" in md3)
+    check("专题边界声明在场（疑似建筑用地）", "疑似 建筑用地" in md3)
+    html3 = Path(out3["html_path"]).read_text(encoding="utf-8")
+    check("html 同步专题面积行", "净变化面积" in html3)
+
+    # 6. 向后兼容：旧 spectral_diff state 的标题与历史版本一致（回落深圳湾/水域）
+    out4_title = collect(_synthetic_state())["title"]
+    check("旧 state 回落深圳湾水域（逐字节兼容）",
+          out4_title == "深圳湾水域变化分析报告（2023-07-08 → 2025-07-27）", out4_title)
+
     print(f"\n=== 汇总: {'全部通过' if ok else '存在 FAIL'} ===")
     return 0 if ok else 1
 
@@ -404,7 +466,8 @@ def main() -> int:
 
     # 交付自检：md 数字与 state 一致
     md = Path(out["md_path"]).read_text(encoding="utf-8")
-    ratio_pct = f"{(final['analysis_result']['change_ratio'] * 100):.2f}%"
+    # 与 collect 的 metrics 同口径（round 而非 .2f——0.074 → "7.4%"，格式必须逐字一致）
+    ratio_pct = f"{round(final['analysis_result']['change_ratio'] * 100, 2)}%"
     assert ratio_pct in md, f"数字闸门自检失败：md 缺 {ratio_pct}"
     print(f"  [自检] md 含真实数字 {ratio_pct} ✓")
     return 0

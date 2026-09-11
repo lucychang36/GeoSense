@@ -255,7 +255,7 @@
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 性能优化（基准先行 + 三层） | `scripts/bench.py` + `scripts/tile_cache.py` + 推理层/传输层优化（OpenSpec 变更 2026-09-10-perf-optimization） | ✅ |
-| W2 | 文档完善 + 开源准备 | （学习计划） | ⏭ |
+| W2 | 跨域泛化实战检验 + 文档开源准备 | `scripts/thematic_change.py` + `satellite_download.py` 区域化（OpenSpec 变更 2026-09-10-thematic-index-change） | 🚧（实战检验 ✅，文档/开源 ⏭） |
 | W3 | 技术博客 2-3 篇 | （学习计划） | ⏭ |
 | W4 | 项目展示视频 + 求职准备 | （学习计划） | ⏭ |
 
@@ -268,6 +268,16 @@
 > ⑥ **CDN 语义教学**：Cache-Control（强缓存「别再问」）+ ETag/304（协商缓存「问了没变别传」）+ 内容寻址（键即版本）= CDN 全部语义内核，上 CDN 只是换分发点
 > ⚠ **W1 诚实红旗**：① fp16 回退——MPS 上小模型半精度收益被编译开销吃掉 ② mtime 键是失效最简解，「同 mtime 覆盖」理论漏网（文档化取舍）③ bench 权威数字需干净终端跑（沙箱 sitecustomize 干扰）④ inference_mode 稳态收益 ~3% 在噪声范围内（升级价值在语义与未来收益）⑤ warmup 推高加载时间，是转移成本不是消除成本
 > 快速验证：`.venv/bin/python scripts/bench.py --save after`（自动与 baseline.json 对比；瓦片缓存热路径应毫秒级）
+
+> **第12月 W2 关键数据（跨域泛化实战检验：郑州高新区建筑用地变化报告，OpenSpec 2026-09-10-thematic-index-change）**：
+> ① **光谱指数专题框架（方案 B+）**：`THEMES` 注册表（纯数据：指数公式+阈值+联合/排除条件+语义色）+ `index_change` 唯一引擎——新增"绿化用地"专题=加一个 dict 条目零新代码（同 W2 SEMANTIC 表 / 第9月 task_executors 注入点的开放-封闭先例）；LLM 只选 theme 枚举不碰计算（W4 意图分层同款）
+> ② **波段约定 v2**：仓库升级 6 波段（B2,B3,B4,B8,B11,B12）——SWIR 支撑 NDBI 建筑指数；SWIR 20m 原生经 COGReader 统一重采样；旧 4 波段 COG 不受影响（SWIR 追加尾部，真彩色预览 bands=(3,2,1) 不变）
+> ③ **数据获取区域化**：`satellite_download.py --region`（REGION_PRESETS：szbay/zhengzhou_hightech）+ `--tile auto`（取覆盖最高景的 MGRS tile 固定，双时相同 tile 配对）；郑州实测命中 **49SGU** 双景：2023-06-26（云 5.2%）vs 2025-06-27（云 4.4%），同月配对防物候伪变化
+> ④ **阈值不拍脑袋（D4）**：`--probe` 指数分位数探查——NDBI p50=-0.007（中位数在 0 附近，单指数必爆炸）→ `NDBI>0 且 NDVI<NDBI` 联合判定收敛到 11.1-11.4% 建成区占比（符合高新区半城乡混合实况）
+> ⑤ **实测结果**：新增 10.16 km² / 消失 11.60 km² / **净变化 -1.44 km²**（变化占比 7.40%，像元 20m）；目视检查：中部偏东红色连片发展走廊空间可信；蓝色"消失"沿道路线状分布=阴影/BRDF 伪变化特征
+> ⑥ **e2e 双场景**：`--zhengzhou` 专题场景 **10/10**（NL→planner 路由 index_change→report 事件→标题/面积行/边界声明断言）+ 深圳湾回归 **7/7**；selftest 全绿（thematic 21 + report 17 + text_to_map 14 + symbology 8 + cartography 10）
+> ⚠ **W2 诚实红旗**：① 指数命中≠土地真值（裸土 NDBI 同样偏高，NDVI 联合判定缓解不根除）→ 报告措辞"疑似建筑用地" ② 双向翻动大（消失 11.6 km² 沿道路线状=伪变化信号）+ 右上薄云未掩净——净变化方向（-1.44 km²）可信度低于新增/消失总量 ③ bbox（304 km²）≈ 高新区行政区（99 km²）的 3 倍，含周边城乡接合带 ④ SWIR 20m 重采样非真 10m ⑤ green/water 专题只注册未实测 ⑥ 净变化占比与 change_ratio 口径差异（gain+loss vs net）已在指标表分行呈现
+> 快速验证：`.venv/bin/python scripts/thematic_change.py --selftest`（21 断言零网络）；全链路 `.venv/bin/python scripts/e2e_test.py --zhengzhou`
 
 ## 项目结构
 
@@ -332,7 +342,7 @@ GeoSense/
 │   ├── cog_generator.py    # 阶段2 W1：普通 GeoTIFF → COG（含对比报告）
 │   ├── cog_range_demo.py   # 阶段2 W2：overview 对比 + HTTP Range 协议验证
 │   ├── tile_server.py      # 阶段2 W2：COG 在线瓦片服务（FastAPI /tiles/{z}/{x}/{y}.png）
-│   ├── satellite_download.py # 阶段2 W3：遥感仓库构建（合成/真实 Sentinel-2 双模式）
+│   ├── satellite_download.py # 阶段2 W3：遥感仓库构建（合成/真实双模式；v2 六波段 + --region 区域预设 + --tile auto）
 │   ├── cog_benchmark.py   # 阶段2 W4：普通 GeoTIFF vs COG 性能基准（4096 测试对）
 │   ├── stac_catalog.py    # 第5月 W1：为 COG 影像创建 STAC 目录（pystac）
 │   ├── export_geoparquet.py # 第5月 W3：PostGIS → GeoParquet 导出
@@ -356,7 +366,8 @@ GeoSense/
 │   ├── report_templates/    # 第11月 W1：报告双模板（report.md.j2 / report.html.j2）
 │   ├── e2e_test.py          # 第11月 W4：端到端测试（起服 → NL → report 事件 → 下载断言）
 │   ├── bench.py             # 第12月 W1：性能基准（瓦片冷/热、推理 fp32/fp16、冷启动、gzip；--save baseline/after）
-│   └── tile_cache.py        # 第12月 W1：瓦片磁盘 LRU（键含 mtime_ns 防失效；fail-open 降级）
+│   ├── tile_cache.py        # 第12月 W1：瓦片磁盘 LRU（键含 mtime_ns 防失效；fail-open 降级）
+│   ├── thematic_change.py   # 第12月 W2：光谱指数专题框架（THEMES 注册表 + index_change 引擎；--selftest 21 断言 / --probe 阈值标定）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）

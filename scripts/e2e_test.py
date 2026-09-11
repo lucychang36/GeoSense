@@ -27,6 +27,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 PORT = 8010
 API = f"http://127.0.0.1:{PORT}"
 QUERY = "对比深圳湾 2023 和 2025 的水域变化，并生成分析报告"
+# 专题场景（thematic-index-change）：--zhengzhou 切换；断言专题标题/面积行/口径修正
+QUERY_ZZ = "对比郑州高新区 2023 和 2025 的建筑用地变化，并生成分析报告"
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
@@ -46,6 +48,12 @@ def wait_server(timeout: float = 60) -> bool:
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--zhengzhou", action="store_true",
+                    help="跑郑州高新区建筑用地专题场景（默认深圳湾回归场景）")
+    args = ap.parse_args()
+    query = QUERY_ZZ if args.zhengzhou else QUERY
     results: list[bool] = []
 
     # ---- 起服务（子进程；WORKBUDDY 沙箱内须 env -u PYTHONPATH，脚本外运行无此问题）----
@@ -60,10 +68,10 @@ def main() -> int:
             return 1
 
         # ---- SSE 全链路 ----
-        print(f"[e2e] POST /api/chat：「{QUERY}」（含完整分析管道，预计 1-3 分钟）…")
+        print(f"[e2e] POST /api/chat：「{query}」（含完整分析管道，预计 1-3 分钟）…")
         req = urllib.request.Request(
             f"{API}/api/chat",
-            data=json.dumps({"query": QUERY}).encode(),
+            data=json.dumps({"query": query}).encode(),
             headers={"Content-Type": "application/json"})
         t0 = time.time()
         with urllib.request.urlopen(req, timeout=300) as resp:
@@ -106,9 +114,18 @@ def main() -> int:
                              urllib.request.urlopen(f"{API}{md_url}", timeout=10).status == 200,
                              md_url))
         md_text = urllib.request.urlopen(f"{API}{md_url}", timeout=10).read().decode("utf-8")
-        ratio_pct = f"{rep['change_ratio'] * 100:.2f}%"
+        ratio_pct = f"{round(rep['change_ratio'] * 100, 2)}%"   # 与 metrics 同口径（round 非 .2f）
         results.append(check(f"报告内容含真实数字 {ratio_pct}（数字闸门端到端）",
                              ratio_pct in md_text))
+        if args.zhengzhou:
+            results.append(check("专题标题（郑州高新区建筑用地变化分析报告）",
+                                 "郑州高新区建筑用地变化分析报告" in rep.get("title", "")
+                                 and "郑州高新区建筑用地变化分析报告" in md_text,
+                                 rep.get("title", "")))
+            results.append(check("专题面积行（新增/消失/净变化 km²）",
+                                 "新增面积" in md_text and "净变化面积" in md_text))
+            results.append(check("专题边界声明（疑似 建筑用地）",
+                                 "疑似 建筑用地" in md_text))
 
         # 净化负例：越界路径不得 200
         try:

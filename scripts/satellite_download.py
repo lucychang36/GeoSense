@@ -6,7 +6,11 @@
 - --real 模式：检索 → 用 COG"按需字节读取"远程裁剪 bbox（不下载整景）→ 转本地 COG。
   该能力正是 COG + HTTP Range 的价值：10980x10980 的整景只取需要的窗口。
 - 默认模式（合成）：生成与 Sentinel-2 波段结构对齐的模拟影像，保证离线可学、
-  可复现；--real 与合成模式产出的仓库格式完全一致（波段顺序 B2,B3,B4,B8）。
+  可复现；--real 与合成模式产出的仓库格式完全一致。
+- 波段约定 v2（2026-09-11 thematic-index-change）：B2,B3,B4,B8,B11,B12 六波段
+  ——新增 SWIR（B11/B12，20m 重采样到统一网格）支撑 NDBI 建筑用地指数；
+  旧 4 波段 COG 不受影响（SWIR 追加在尾部，前 4 个索引不变）。
+- --region：区域预设（REGION_PRESETS），bbox/输出前缀由区域决定，默认深圳湾。
 
 核心概念：Sentinel-2 波段（真彩色 / 假彩色 / 水质）
 - 10m 波段：B2(蓝 490nm) B3(绿 560nm) B4(红 665nm) B8(近红外 842nm)
@@ -53,8 +57,23 @@ SEED = 42                                        # 固定随机种子 → 可复
 # 多时相：模拟"过去 5 年"的水质变化观测
 DATES = ["2019-06", "2020-06", "2021-06", "2022-06", "2023-06"]
 
-# 波段清单（顺序即文件内波段序号）：B2=蓝 B3=绿 B4=红 B8=近红外
-BANDS = ["B2", "B3", "B4", "B8"]
+# 波段清单（顺序即文件内波段序号）—— v2 六波段：B11/B12 为 SWIR（20m 原生，
+# 下载时统一重采样到网格），支撑 NDBI（建筑用地）/NDMI 等指数
+BANDS = ["B2", "B3", "B4", "B8", "B11", "B12"]
+
+# 区域预设：bbox + 输出文件前缀。加新区域 = 加一个条目（开放-封闭，同 THEMES 思路）
+REGION_PRESETS: dict[str, dict] = {
+    "szbay": {
+        "bbox": (113.88, 22.46, 114.10, 22.60),
+        "prefix": "szbay",
+        "label": "深圳湾",
+    },
+    "zhengzhou_hightech": {
+        "bbox": (113.50, 34.73, 113.70, 34.88),   # 郑州高新区 bbox 近似（行政边界裁剪留后续变更）
+        "prefix": "zhengzhou",
+        "label": "郑州高新区",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -86,13 +105,13 @@ def _band_values(land: np.ndarray, tex: np.ndarray, turbidity: float,
     返回 (波段数组列表, 云量百分比)。
     """
     h, w = land.shape
-    # 陆地基值：植被 / 城市按纹理混合
-    veg = np.stack([0.05, 0.08, 0.06, 0.25])          # B2,B3,B4,B8 植被反射率
-    urb = np.stack([0.12, 0.14, 0.16, 0.14])          # 城市
+    # 陆地基值：植被 / 城市按纹理混合（v2 六波段，含 SWIR：城市 SWIR 高、植被 SWIR 低）
+    veg = np.stack([0.05, 0.08, 0.06, 0.25, 0.18, 0.09])   # B2,B3,B4,B8,B11,B12 植被
+    urb = np.stack([0.12, 0.14, 0.16, 0.14, 0.24, 0.22])   # 城市（SWIR 高 → NDBI 高）
     land_r = veg[None, None, :] * tex[..., None] + urb[None, None, :] * (1 - tex[..., None])
     # 水体基值：清洁水（B8 很低）；浊度升高 → B4 与 B8 上升（藻/泥沙）
-    water_r = np.stack([0.07, 0.05, 0.03, 0.02])
-    algae = np.stack([0.06, 0.06, 0.07, 0.16])        # 藻类光谱（近红外高）
+    water_r = np.stack([0.07, 0.05, 0.03, 0.02, 0.01, 0.005])
+    algae = np.stack([0.06, 0.06, 0.07, 0.16, 0.03, 0.02])  # 藻类光谱（近红外高）
     water_r = water_r + turbidity * algae
 
     band_float = land[..., None] * land_r + (1 - land[..., None]) * water_r
@@ -109,7 +128,7 @@ def _band_values(land: np.ndarray, tex: np.ndarray, turbidity: float,
 
     # 噪声 + 转 uint16（反射率 × 10000，Sentinel-2 风格 DN）
     bands = []
-    for b in range(4):
+    for b in range(6):
         arr = (band_float[..., b] * 10000 + rng.normal(0, 60, (h, w)))
         arr = np.clip(arr, 1, 10000).astype("uint16")
         arr[0:40, 0:40] = NODATA                      # 边缘 NoData（模拟无效区域）
@@ -129,14 +148,15 @@ def build_scene(date_idx: int, n_dates: int, rng: np.random.Generator):
 # ---------------------------------------------------------------------------
 # 仓库构建
 # ---------------------------------------------------------------------------
-def _write_and_convert(bands: list[np.ndarray], plain_path: Path, cog_path: Path) -> None:
+def _write_and_convert(bands: list[np.ndarray], plain_path: Path, cog_path: Path,
+                       bbox: tuple | None = None) -> None:
     """写普通 GeoTIFF → 复用 W1 的 convert 转 COG。
 
     注意：profile 的尺寸必须用数组实际形状（h, w），而不是模块常量——
     合成场景与真实裁剪场景的尺寸不同（512 vs 1100x700）。
     """
     h, w = bands[0].shape
-    west, south, east, north = BBOX
+    west, south, east, north = bbox if bbox else BBOX
     transform = from_origin(west, north, (east - west) / w, (north - south) / h)
     profile = {
         "driver": "GTiff",
@@ -155,18 +175,25 @@ def _write_and_convert(bands: list[np.ndarray], plain_path: Path, cog_path: Path
 # ---------------------------------------------------------------------------
 # 真实数据下载（--real）：earth-search STAC 检索 + 远程 COG 裁剪
 # ---------------------------------------------------------------------------
-REAL_BANDS = {"blue": "B2", "green": "B3", "red": "B4", "nir": "B8"}
+# earth-search element84 L2A 资产名 → 波段名；swir16/swir22 为 20m 原生，
+# COGReader.feature(width=W,height=H) 统一重采样到目标网格（与 10m 波段同形状）
+REAL_BANDS = {"blue": "B2", "green": "B3", "red": "B4", "nir": "B8",
+              "swir16": "B11", "swir22": "B12"}
 
 
 def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20,
-                        tile: str | None = None) -> dict | None:
-    """检索一景真实 Sentinel-2（深圳湾 bbox、低云量），远程裁剪为本地 COG。
+                        tile: str | None = None, region: str = "szbay") -> dict | None:
+    """检索一景真实 Sentinel-2（region 预设 bbox、低云量），远程裁剪为本地 COG。
 
-    tile：MGRS tile 过滤（如 "49QGE"）。变化检测需要同 tile 双时相配对——
-    不同 tile 轨道视角/网格不同，直接配对会产生大量伪变化。
+    tile：MGRS tile 过滤（如 "49QGE"）或 "auto"。变化检测需要同 tile 双时相配对——
+    不同 tile 轨道视角/网格不同，直接配对会产生大量伪变化。"auto" = 先不带 tile
+    检索、取覆盖度最高景的 tile 并固定（第二次调用同一 auto 会收敛到同 tile）。
 
     返回 manifest 条目；无可匹配影像时返回 None。
     """
+    preset = REGION_PRESETS[region]
+    bbox = preset["bbox"]
+    prefix = preset["prefix"]
     import json as _json
     import urllib.parse as _up
     import urllib.request as _ur
@@ -175,31 +202,36 @@ def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20,
     # 1) STAC 检索：limit 视场景调整——tile 过滤时需要更大的候选池
     params = _up.urlencode({
         "collections": "sentinel-2-l2a",
-        "bbox": ",".join(map(str, BBOX)),
+        "bbox": ",".join(map(str, bbox)),
         "datetime": f"{dt_start}T00:00:00Z/{dt_end}T23:59:59Z",
         "query": _json.dumps({"eo:cloud_cover": {"lt": cloud_max}}),
         "limit": 30 if tile else 5,
     })
     search_url = f"https://earth-search.aws.element84.com/v1/search?{params}"
-    print(f"🔎 STAC 检索（bbox={BBOX}，云量<{cloud_max}%）…")
+    print(f"🔎 STAC 检索（region={region}，bbox={bbox}，云量<{cloud_max}%）…")
     with _ur.urlopen(search_url, timeout=30) as resp:
         features = _json.load(resp).get("features", [])
-    if tile:
+
+    def overlap(feat) -> float:
+        """景 bbox 与目标 BBOX 的交集面积（覆盖度评分）。"""
+        fb = feat["bbox"]
+        ox = max(0.0, min(fb[2], bbox[2]) - max(fb[0], bbox[0]))
+        oy = max(0.0, min(fb[3], bbox[3]) - max(fb[1], bbox[1]))
+        return ox * oy
+
+    if tile == "auto" and features:
+        auto_tile = max(features, key=overlap)["id"].split("_")[1]
+        print(f"   tile=auto → 取覆盖度最高景的 MGRS tile：{auto_tile}")
+        features = [f for f in features if f["id"].split("_")[1] == auto_tile]
+    elif tile:
         features = [f for f in features if f["id"].split("_")[1] == tile]
         print(f"   tile 过滤 {tile}：剩余 {len(features)} 景")
     if not features:
         print("   ⚠ 无匹配影像（试试调整时间范围/放宽云量）")
         return None
 
-    def overlap(feat) -> float:
-        """景 bbox 与目标 BBOX 的交集面积（覆盖度评分）。"""
-        fb = feat["bbox"]
-        ox = max(0.0, min(fb[2], BBOX[2]) - max(fb[0], BBOX[0]))
-        oy = max(0.0, min(fb[3], BBOX[3]) - max(fb[1], BBOX[1]))
-        return ox * oy
-
     item = max(features, key=overlap)
-    cover = overlap(item) / ((BBOX[2] - BBOX[0]) * (BBOX[3] - BBOX[1]))
+    cover = overlap(item) / ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
     date = item["properties"]["datetime"][:10]
     cloud = float(item["properties"]["eo:cloud_cover"])
     print(f"   命中 {item['id']}（{date}，云量 {cloud:.1f}%，bbox 覆盖 {cover:.0%}）")
@@ -207,7 +239,7 @@ def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20,
         print("   ⚠ 该景对目标区域的覆盖不足 50%，结果可能包含大片 NoData")
 
     # 2) 远程裁剪：bbox 包成矩形 GeoJSON，用 COG 按需读取（只下需要的字节块）
-    w, s, e, n = BBOX
+    w, s, e, n = bbox
     shape = {"type": "Feature", "properties": {}, "geometry": {
         "type": "Polygon",
         "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}}
@@ -226,25 +258,28 @@ def download_real_scene(dt_start: str, dt_end: str, cloud_max: float = 20,
         bands.append(arr.astype("uint16"))
 
     # 3) 写本地 COG + 真彩色预览（与合成场景同一流水线、同一波段顺序）
-    cog_path = COGS_DIR / f"szbay_real_{date.replace('-', '')}.tif"
-    _write_and_convert(bands, TMP_DIR / f"szbay_real_{date.replace('-', '')}.tif", cog_path)
-    preview = read_partial_png(str(cog_path), BBOX, width=W, height=H, bands=(3, 2, 1))
-    (COGS_DIR / f"szbay_real_{date.replace('-', '')}.preview.png").write_bytes(preview)
+    stem = f"{prefix}_real_{date.replace('-', '')}"
+    cog_path = COGS_DIR / f"{stem}.tif"
+    _write_and_convert(bands, TMP_DIR / f"{stem}.tif", cog_path, bbox=bbox)
+    preview = read_partial_png(str(cog_path), bbox, width=W, height=H, bands=(3, 2, 1))
+    (COGS_DIR / f"{stem}.preview.png").write_bytes(preview)
 
     return {
         "id": item["id"],
         "date": date,
+        "region": region,
         "source": "sentinel-2（真实）",
         "bands": list(REAL_BANDS.values()),
         "cloud": round(cloud, 1),
-        "bbox": list(BBOX),
+        "bbox": list(bbox),
         "path": str(cog_path.relative_to(PROJECT_ROOT)),
-        "preview": str((COGS_DIR / f"{cog_path.stem}.preview.png").relative_to(PROJECT_ROOT)),
+        "preview": str((COGS_DIR / f"{stem}.preview.png").relative_to(PROJECT_ROOT)),
     }
 
 
 def download_real_mosaic(dt_start: str, dt_end: str, cloud_max: float = 30,
-                         width: int = 2200, height: int = 1400) -> dict | None:
+                         width: int = 2200, height: int = 1400,
+                         region: str = "szbay") -> dict | None:
     """跨 UTM 分带拼接：下载多景真实 Sentinel-2，合并成覆盖 bbox 的完整 COG。
 
     背景：深圳湾横跨 UTM 分带（49QGE 覆盖西半、50QKK 覆盖东半），单景必然
@@ -258,25 +293,28 @@ def download_real_mosaic(dt_start: str, dt_end: str, cloud_max: float = 30,
     import urllib.request as _ur
     from rio_tiler.io import COGReader
 
+    preset = REGION_PRESETS[region]
+    bbox = preset["bbox"]
+    prefix = preset["prefix"]
     params = _up.urlencode({
         "collections": "sentinel-2-l2a",
-        "bbox": ",".join(map(str, BBOX)),
+        "bbox": ",".join(map(str, bbox)),
         "datetime": f"{dt_start}T00:00:00Z/{dt_end}T23:59:59Z",
         "query": _json.dumps({"eo:cloud_cover": {"lt": cloud_max}}),
         "limit": 10,
     })
     search_url = f"https://earth-search.aws.element84.com/v1/search?{params}"
-    print(f"🔎 STAC 检索（bbox={BBOX}，云量<{cloud_max}%，limit=10）…")
+    print(f"🔎 STAC 检索（region={region}，bbox={bbox}，云量<{cloud_max}%，limit=10）…")
     with _ur.urlopen(search_url, timeout=30) as resp:
         features = _json.load(resp).get("features", [])
 
     def overlap(feat) -> float:
         fb = feat["bbox"]
-        ox = max(0.0, min(fb[2], BBOX[2]) - max(fb[0], BBOX[0]))
-        oy = max(0.0, min(fb[3], BBOX[3]) - max(fb[1], BBOX[1]))
+        ox = max(0.0, min(fb[2], bbox[2]) - max(fb[0], bbox[0]))
+        oy = max(0.0, min(fb[3], bbox[3]) - max(fb[1], bbox[1]))
         return ox * oy
 
-    bbox_area = (BBOX[2] - BBOX[0]) * (BBOX[3] - BBOX[1])
+    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
     min_cover = 0.1 * bbox_area                       # 至少覆盖 bbox 面积的 10%
     items = [f for f in features if overlap(f) > min_cover]
     items.sort(key=overlap, reverse=True)             # 覆盖优先
@@ -286,12 +324,13 @@ def download_real_mosaic(dt_start: str, dt_end: str, cloud_max: float = 30,
     print(f"   参与拼接 {len(items)} 景："
           + ", ".join(f"{i['properties']['datetime'][:10]}({overlap(i) / bbox_area:.0%})" for i in items))
 
-    w, s, e, n = BBOX
+    w, s, e, n = bbox
     shape = {"type": "Feature", "properties": {}, "geometry": {
         "type": "Polygon",
         "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}}
-    result = np.zeros((4, height, width), dtype="uint16")
-    valid = np.zeros((4, height, width), dtype=bool)
+    n_bands = len(REAL_BANDS)
+    result = np.zeros((n_bands, height, width), dtype="uint16")
+    valid = np.zeros((n_bands, height, width), dtype=bool)
 
     for item in items:
         print(f"   📥 {item['id'][:40]}…")
@@ -334,7 +373,9 @@ def main() -> int:
     parser.add_argument("--dt-start", default="2025-07-01", help="真实检索起始日期")
     parser.add_argument("--dt-end", default="2025-08-19", help="真实检索结束日期")
     parser.add_argument("--tile", default=None,
-                        help="MGRS tile 过滤（如 49QGE；变化检测时相配对需同 tile）")
+                        help="MGRS tile 过滤（如 49QGE；变化检测时相配对需同 tile；auto=自动取覆盖最高景的 tile）")
+    parser.add_argument("--region", default="szbay", choices=sorted(REGION_PRESETS),
+                        help="区域预设（bbox + 输出前缀）；默认 szbay 向后兼容")
     parser.add_argument("--cloud", type=float, default=20.0, help="最大云量（%）")
     parser.add_argument("--probe-real", action="store_true",
                         help="只探测真实数据源连通性（Copernicus/AWS STAC）")
@@ -355,9 +396,9 @@ def main() -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     if args.real:
-        entry = (download_real_mosaic(args.dt_start, args.dt_end) if args.mosaic
+        entry = (download_real_mosaic(args.dt_start, args.dt_end, region=args.region) if args.mosaic
                  else download_real_scene(args.dt_start, args.dt_end, cloud_max=args.cloud,
-                                          tile=args.tile))
+                                          tile=args.tile, region=args.region))
         if entry:
             # 同 id 的旧条目先移除（支持重跑更新数据）
             manifest = [m for m in manifest if m["id"] != entry["id"]]
@@ -365,28 +406,32 @@ def main() -> int:
             print(f"   ✅ 真实影像已入库：{entry['path']}（云量 {entry['cloud']}%）")
     else:
         rng = np.random.default_rng(SEED)
+        preset = REGION_PRESETS[args.region]
+        bbox = preset["bbox"]
+        prefix = preset["prefix"]
         for i, date in enumerate(DATES[: args.scenes]):
             print(f"🛰 生成第 {i + 1}/{args.scenes} 景：{date}")
             bands, turbidity, cloud_cover = build_scene(i, len(DATES[: args.scenes]), rng)
-            cog_path = COGS_DIR / f"szbay_{date}.tif"
-            _write_and_convert(bands, TMP_DIR / f"szbay_{date}.tif", cog_path)
+            cog_path = COGS_DIR / f"{prefix}_{date}.tif"
+            _write_and_convert(bands, TMP_DIR / f"{prefix}_{date}.tif", cog_path, bbox=bbox)
 
             # 真彩色预览（B4,B3,B2），复用 W2 的局部读取（dogfooding）
-            west, south, east, north = BBOX
+            west, south, east, north = bbox
             preview = read_partial_png(str(cog_path), (west, south, east, north),
                                        width=WIDTH, height=HEIGHT, bands=(3, 2, 1))
-            (COGS_DIR / f"szbay_{date}.preview.png").write_bytes(preview)
+            (COGS_DIR / f"{prefix}_{date}.preview.png").write_bytes(preview)
 
             manifest.append({
-                "id": f"S2_{date.replace('-', '')}",
+                "id": f"S2_{date.replace('-', '')}" if args.region == "szbay" else f"S2_{prefix}_{date.replace('-', '')}",
                 "date": date,
+                "region": args.region,
                 "source": "sentinel-2（合成）",
                 "bands": BANDS,
                 "turbidity": round(float(turbidity), 3),     # 合成"水质"参数
                 "cloud": round(cloud_cover, 1),              # 云量 %（真实场景来自质量标记）
-                "bbox": list(BBOX),
+                "bbox": list(bbox),
                 "path": str(cog_path.relative_to(PROJECT_ROOT)),
-                "preview": str((COGS_DIR / f"szbay_{date}.preview.png").relative_to(PROJECT_ROOT)),
+                "preview": str((COGS_DIR / f"{prefix}_{date}.preview.png").relative_to(PROJECT_ROOT)),
             })
             print(f"   ✅ COG + 真彩色预览已写入：{cog_path.name}（云量 {cloud_cover:.1f}%）")
 

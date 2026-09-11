@@ -24,6 +24,11 @@
 | 有效像元 | {{ metrics.valid_px }} |
 | 有效覆盖率 | {{ metrics.valid_pct }}% |
 | 检测方法 | {{ metrics.method }}（阈值 {{ metrics.threshold }}） |
+{% if metrics.net_km2 is defined %}
+| 新增面积 | {{ metrics.gain_km2 }} km² |
+| 消失面积 | {{ metrics.loss_km2 }} km² |
+| 净变化面积 | {{ metrics.net_km2 }} km² |
+{% endif %}
 
 ## 图表
 
@@ -38,8 +43,14 @@
 ## 方法说明
 
 - 数据源：data/cogs/ 下两期 Sentinel-2 风格 COG（{{ period }}）
+{% if metrics.method == "index_change" %}
+- 检测方法：光谱指数专题判定（{{ metrics.theme_label }}）：主指数阈值 {{ metrics.threshold }}，联合条件与排除规则见 backend 专题注册表
+- 变化定义：两期专题掩膜差分（新增 = 期 B 命中且期 A 未命中；消失反之）；云污染与无效观测已剔除
+- 边界声明：指数命中 ≠ 土地利用真值（裸土 NDBI 同样偏高，联合判定缓解不根除），结果为"疑似 {{ metrics.theme_label }}"
+{% else %}
 - 检测方法：{{ metrics.method }}，差异阈值 {{ metrics.threshold }}
 - 变化定义：两期光谱差分超过阈值的像元记为变化；云污染与无效观测已剔除
+{% endif %}
 - 数字来源：全部指标由检测代码直接产出并注入本模板，未经任何语言模型转写
 
 ## 附录

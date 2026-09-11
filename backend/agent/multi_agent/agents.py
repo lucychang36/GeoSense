@@ -37,11 +37,13 @@ if str(PROJECT_ROOT) not in sys.path:
 PLANNER_SYSTEM = """你是 GeoSense 多 Agent 系统的 Planner。把用户问题拆解为结构化 JSON 计划。
 
 字段：
-- task_type: "temporal_change" | "segment" | "qa"
-  - temporal_change: 时相对比/变化检测
+- task_type: "temporal_change" | "index_change" | "segment" | "qa"
+  - temporal_change: 时相对比/光谱变化检测（泛化"变化"）
+  - index_change: 土地覆盖专题变化（建筑用地/绿化用地/水域等），必须给 theme
   - segment: 单景分割
   - qa: 通用问答（不调工具直接答）
-- cog_a, cog_b: 较早/较晚 COG 文件名（时相对比必填，单景只填 cog_a）
+- theme: "builtup"（建筑用地）| "green"（绿化用地）| "water"（水域）——仅 index_change 需要
+- cog_a, cog_b: 较早/较晚 COG 文件名（时相对比必填；不确定可留空，Data Agent 兜底）
 - reason: 一句话判断理由
 
 只输出 JSON，不要任何其他文字、解释、markdown 包裹。
@@ -93,13 +95,20 @@ def planner_node(state: dict) -> dict:
         raw = f"[planner LLM 失败: {type(exc).__name__}: {exc}]"
         plan = {}
 
-    # 规则回退：问题含两个年份 → temporal_change
+    # 规则回退：问题含两个年份 → temporal_change；含专题关键词 → index_change
     if not plan:
         years = re.findall(r"(?:20)?\d{2}", query)
         years = [("20" + y if len(y) == 2 else y) for y in years if 18 <= (int(y) if len(y) == 2 else int(y) % 100) <= 35]
         if len(set(years)) >= 2:
-            plan = {"task_type": "temporal_change", "cog_a": "", "cog_b": "",
-                    "reason": f"规则回退：问题含年份 {years}"}
+            theme_kw = {"建筑": "builtup", "绿化": "green", "绿地": "green",
+                        "植被": "green", "水域": "water", "水体": "water"}
+            theme = next((v for k, v in theme_kw.items() if k in query), None)
+            if theme:
+                plan = {"task_type": "index_change", "theme": theme, "cog_a": "", "cog_b": "",
+                        "reason": f"规则回退：年份 {years} + 专题关键词 → {theme}"}
+            else:
+                plan = {"task_type": "temporal_change", "cog_a": "", "cog_b": "",
+                        "reason": f"规则回退：问题含年份 {years}"}
 
     log = list(state.get("step_log", []))
     log.append(f"planner → task_type={plan.get('task_type', '?')}, reason={plan.get('reason', '?')[:60]}")
@@ -110,29 +119,46 @@ def planner_node(state: dict) -> dict:
 # ===========================================================================
 # Data Agent：匹配 COG
 # ===========================================================================
+# 区域关键词 → 文件前缀（thematic-index-change：多区域共存时按用户问题选对数据源）
+REGION_KEYWORDS = {"郑州": "zhengzhou", "高新区": "zhengzhou", "深圳湾": "szbay", "深圳": "szbay"}
+REGION_LABELS = {"zhengzhou": "郑州高新区", "szbay": "深圳湾"}
+
+
 def data_node(state: dict) -> dict:
-    """从 data/cogs/ 选 cog_a / cog_b。优先用 planner 给的文件名；缺则按 49QGE 日期 COG
-    的最早/最晚兜底（要求文件名含 8 位连续数字，剔除合成图如 *_mosaic.tif）。"""
+    """从 data/cogs/ 选 cog_a / cog_b。优先用 planner 给的文件名；缺则按区域前缀的
+    真实日期 COG 最早/最晚兜底（要求文件名含 8 位连续数字，剔除合成图如 *_mosaic.tif）。
+    区域由用户问题关键词或 planner 给的文件名推断；无关键词时回落深圳湾（历史行为）。"""
     cogs_dir = PROJECT_ROOT / "data" / "cogs"
     available = sorted([p.name for p in cogs_dir.glob("*.tif")]) if cogs_dir.exists() else []
     plan = state.get("plan", {})
+    query = state.get("user_query", "")
     cog_a, cog_b = (plan.get("cog_a") or ""), (plan.get("cog_b") or "")
 
     def _date8(name: str) -> int | None:
         m = re.search(r"(\d{8})", name)
         return int(m.group(1)) if m else None
 
-    # 兜底：找含 8 位日期的 szbay_real COG（剔除 mosaic/合成图）
-    real_dated = [(n, _date8(n)) for n in available if "szbay_real" in n]
+    # 区域推断：问题关键词优先，其次 plan 里 COG 文件名前缀（枚举优先于自由字符串）
+    prefix = next((p for kw, p in REGION_KEYWORDS.items() if kw in query), None)
+    if prefix is None and cog_a:
+        prefix = next((p for p in REGION_LABELS if cog_a.startswith(p + "_")), None)
+    region_label = REGION_LABELS.get(prefix or "", "")
+
+    # 兜底：找含 8 位日期的 {prefix}_real COG（剔除 mosaic/合成图）；无前缀回落 szbay
+    scan = f"{prefix}_real" if prefix else "szbay_real"
+    real_dated = [(n, _date8(n)) for n in available if scan in n]
     real_dated = [(n, d) for n, d in real_dated if d is not None]
     if ((not cog_a or cog_a not in available) or (not cog_b or cog_b not in available)) and len(real_dated) >= 2:
         real_dated.sort(key=lambda x: x[1])
         cog_a, cog_b = real_dated[0][0], real_dated[-1][0]
 
     log = list(state.get("step_log", []))
-    log.append(f"data → cog_a={cog_a}, cog_b={cog_b}（候选 {len(available)} 个，dated {len(real_dated)}）")
-    return {"cog_a": cog_a, "cog_b": cog_b, "cogs_listed": available,
-            "current_step": "analysis", "step_log": log}
+    log.append(f"data → cog_a={cog_a}, cog_b={cog_b}（候选 {len(available)} 个，dated {len(real_dated)}，区域={region_label or '默认深圳湾'}）")
+    out = {"cog_a": cog_a, "cog_b": cog_b, "cogs_listed": available,
+           "current_step": "analysis", "step_log": log}
+    if region_label:
+        out["region_label"] = region_label
+    return out
 
 
 # ===========================================================================
@@ -148,6 +174,27 @@ def analysis_node(state: dict) -> dict:
         return {"analysis_error": "缺少 COG 文件名", "current_step": "cartography"}
     if cog_a == cog_b:
         return {"analysis_error": f"cog_a == cog_b ({cog_a})，时相对比需要两景不同", "current_step": "cartography"}
+
+    # 专题分支（thematic-index-change）：index_change → THEMES 光谱指数判定
+    plan = state.get("plan", {})
+    if plan.get("task_type") == "index_change":
+        theme = plan.get("theme") or "builtup"
+        try:
+            from scripts.thematic_change import THEMES as _THEMES
+            from scripts.thematic_change import index_change as _index_change
+            if theme not in _THEMES:
+                return {"analysis_error": f"未知专题 {theme!r}（可选 {sorted(_THEMES)}）",
+                        "current_step": "cartography"}
+            cogs_dir = PROJECT_ROOT / "data" / "cogs"
+            res = _index_change(cogs_dir / cog_a, cogs_dir / cog_b, theme)
+            if state.get("region_label"):
+                res["region_label"] = state["region_label"]
+            log = list(state.get("step_log", []))
+            log.append(f"analysis → index_change[{theme}] net={res['net_km2']:+} km²"
+                       f"（gain {res['gain_px']:,} px / loss {res['loss_px']:,} px，valid {res['valid_px']:,} px）")
+            return {"analysis_result": res, "current_step": "cartography", "step_log": log}
+        except Exception as exc:  # noqa: BLE001
+            return {"analysis_error": f"{type(exc).__name__}: {exc}", "current_step": "cartography"}
 
     try:
         from scripts.real_change_detection import (
@@ -207,8 +254,17 @@ def cartography_node(state: dict) -> dict:
         with rasterio.open(PROJECT_ROOT / "data" / "cogs" / cog_b) as ds:
             bands_b = ds.read().astype(np.float32) / 10000.0
         # 复用 analysis 算的 change mask（重新跑一次轻量，保证本节点自包含）
-        from scripts.real_change_detection import spectral_diff_change
-        change = spectral_diff_change(bands_a, bands_b, threshold=res.get("threshold", 0.08))
+        if res.get("method") == "index_change":
+            # 专题分支：两期 THEMES 掩膜差分（与 analysis 同一判定 → 图与数字一致）
+            from scripts.thematic_change import V2_BANDS, classify as _classify
+            theme = res.get("theme", "builtup")
+            with rasterio.open(PROJECT_ROOT / "data" / "cogs" / cog_a) as dsc:
+                _descs = [x for x in (dsc.descriptions or ()) if x]
+            names = _descs if len(_descs) == len(bands_a) else V2_BANDS[: len(bands_a)]
+            change = (_classify(bands_a, names, theme) != _classify(bands_b, names, theme)).astype(np.uint8)
+        else:
+            from scripts.real_change_detection import spectral_diff_change
+            change = spectral_diff_change(bands_a, bands_b, threshold=res.get("threshold", 0.08))
         sym = choose_symbology(profile_data(change.astype(np.uint8), labels=["不变", "变化"]))
 
         out_dir = PROJECT_ROOT / "data" / "output" / "multi_agent_maps"
@@ -225,7 +281,8 @@ def cartography_node(state: dict) -> dict:
         axes[2].imshow(bg)
         axes[2].set_title(f"变化 mask（红=差异 {res['change_ratio']:.2%}，配色: {sym.palette_name}）")
         axes[2].axis("off")
-        fig.suptitle("GeoSense Multi-Agent 时相对比", fontsize=12)
+        theme_extra = f"｜专题：{res['theme_label']}" if res.get("theme_label") else ""
+        fig.suptitle(f"GeoSense Multi-Agent 时相对比{theme_extra}", fontsize=12)
         fig.tight_layout()
         fig.savefig(out_png, dpi=100)
         plt.close(fig)
@@ -279,6 +336,21 @@ def supervisor_node(state: dict) -> dict:
 
     if err:
         answer = f"❌ 分析失败：{err}\n\n执行步骤：\n" + "\n".join(f"  • {x}" for x in log)
+    elif res.get("method") == "index_change" and res.get("net_km2") is not None:
+        report_line = ""
+        if state.get("report_path"):
+            report_line = (f"\n• 分析报告：**{state.get('report_title', '已生成')}**\n"
+                           f"  - Markdown：{state['report_path']}"
+                           f"{'（⚠ LLM 叙事降级，仅数据部分）' if state.get('narrative_skipped') else ''}\n")
+        answer = (
+            f"✅ 专题变化分析完成：{res.get('theme_label', '专题')}（{state.get('cog_a', '?')} vs {state.get('cog_b', '?')}）\n"
+            f"• 方法：光谱指数专题判定（主指数阈值 {res.get('threshold')}，边界：结果为“疑似{res.get('theme_label', '')}”）\n"
+            f"• 新增 {res.get('gain_km2')} km²（{res.get('gain_px', 0):,} px）｜消失 {res.get('loss_km2')} km²（{res.get('loss_px', 0):,} px）\n"
+            f"• 净变化：**{res.get('net_km2'):+} km²**（变化占比 {res.get('change_ratio'):.2%}）\n"
+            f"• 专题图：{map_path or '未生成'}\n"
+            f"{report_line}"
+            f"\n执行链路：\n" + "\n".join(f"  • {x}" for x in log)
+        )
     elif res.get("change_ratio") is not None:
         report_line = ""
         if state.get("report_path"):

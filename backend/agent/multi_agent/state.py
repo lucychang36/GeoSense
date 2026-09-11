@@ -19,13 +19,14 @@ class MultiAgentState(TypedDict, total=False):
     user_query: str                                # 用户原始问题
 
     # ---- Planner 产出 ----
-    plan: NotRequired[dict]                        # {task_type, cog_a, cog_b, reason}
+    plan: NotRequired[dict]                        # {task_type, cog_a, cog_b, theme, reason}
     planner_raw: NotRequired[str]                  # LLM 原始输出（调试用）
 
     # ---- Data Agent 产出 ----
     cog_a: NotRequired[str]                        # 较早 COG 文件名
     cog_b: NotRequired[str]                        # 较晚 COG 文件名
     cogs_listed: NotRequired[list[str]]            # 候选 COG 列表（供审计）
+    region_label: NotRequired[str]                 # 区域中文名（thematic-index-change：报告标题用）
 
     # ---- Analysis Agent 产出 ----
     analysis_result: NotRequired[dict]             # {method, change_ratio, change_px, valid_px, ...}
