@@ -254,14 +254,37 @@ def cartography_node(state: dict) -> dict:
         with rasterio.open(PROJECT_ROOT / "data" / "cogs" / cog_b) as ds:
             bands_b = ds.read().astype(np.float32) / 10000.0
         # 复用 analysis 算的 change mask（重新跑一次轻量，保证本节点自包含）
+        overlay_out = None
         if res.get("method") == "index_change":
-            # 专题分支：两期 THEMES 掩膜差分（与 analysis 同一判定 → 图与数字一致）
-            from scripts.thematic_change import V2_BANDS, classify as _classify
+            # 专题分支（map-result-linkage D5）：与 analysis 同一 _diff_masks 通路
+            # （min_patch_px 过滤后 mask）→ 统计图/报告主数字/地图叠加三者同源
+            from scripts.thematic_change import _diff_masks, build_overlay
             theme = res.get("theme", "builtup")
-            with rasterio.open(PROJECT_ROOT / "data" / "cogs" / cog_a) as dsc:
-                _descs = [x for x in (dsc.descriptions or ()) if x]
-            names = _descs if len(_descs) == len(bands_a) else V2_BANDS[: len(bands_a)]
-            change = (_classify(bands_a, names, theme) != _classify(bands_b, names, theme)).astype(np.uint8)
+            d = _diff_masks(PROJECT_ROOT / "data" / "cogs" / cog_a,
+                            PROJECT_ROOT / "data" / "cogs" / cog_b, theme)
+            change = (d["gain_f"] | d["loss_f"]).astype(np.uint8)
+            # overlay GeoJSON 落盘（~1MB 不走 SSE/state，D4）；失败不阻塞主流程
+            try:
+                overlays_dir = PROJECT_ROOT / "data" / "output" / "overlays"
+                overlays_dir.mkdir(parents=True, exist_ok=True)
+                ov_path = overlays_dir / f"overlay_{time.strftime('%Y%m%d_%H%M%S')}_{theme}.geojson"
+                fc = build_overlay(d["gain_f"], d["loss_f"], d["transform"],
+                                   d["px_km2"] * 1e6, theme, d["period"])
+                ov_path.write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
+                tl = res.get("theme_label", theme)
+                overlay_out = {
+                    "path": str(ov_path),
+                    "count": len(fc["features"]),
+                    "legend": [
+                        {"key": "gain", "color": "#E6323C", "label": f"新增{tl}（疑似）"},
+                        {"key": "loss", "color": "#3C78EB", "label": f"消失{tl}（疑似）"},
+                    ],
+                    "bbox": res.get("bbox"),
+                    # 底图联动：直接用被分析的期 B 影像（就是该区域，无需反查 preset）
+                    "basemap": {"tile_path": f"data/cogs/{cog_b}", "bounds": res.get("bbox")},
+                }
+            except Exception as ov_exc:  # noqa: BLE001
+                overlay_out = {"error": f"{type(ov_exc).__name__}: {ov_exc}"}
         else:
             from scripts.real_change_detection import spectral_diff_change
             change = spectral_diff_change(bands_a, bands_b, threshold=res.get("threshold", 0.08))
@@ -290,8 +313,14 @@ def cartography_node(state: dict) -> dict:
         log = list(state.get("step_log", []))
         log.append(f"cartography → map saved: {out_png.name}（{out_png.stat().st_size:,} B）")
         log.append(f"cartography → symbology: {sym.palette_name}（{sym.reason}）")
-        return {"map_path": str(out_png), "map_bytes": out_png.stat().st_size,
-                "current_step": "supervisor", "step_log": log}
+        if overlay_out and overlay_out.get("count") is not None:
+            log.append(f"cartography → overlay: {overlay_out['count']} 图斑 → "
+                       f"{Path(overlay_out['path']).name}（与主数字同源）")
+        out = {"map_path": str(out_png), "map_bytes": out_png.stat().st_size,
+               "current_step": "supervisor", "step_log": log}
+        if overlay_out is not None:
+            out["overlay_meta"] = overlay_out
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"analysis_error": f"cartography 失败: {type(exc).__name__}: {exc}",
                 "current_step": "supervisor"}
@@ -348,7 +377,9 @@ def supervisor_node(state: dict) -> dict:
             f"• 新增 {res.get('gain_km2')} km²（{res.get('gain_px', 0):,} px）｜消失 {res.get('loss_km2')} km²（{res.get('loss_px', 0):,} px）\n"
             f"• 净变化：**{res.get('net_km2'):+} km²**（变化占比 {res.get('change_ratio'):.2%}）\n"
             f"• 专题图：{map_path or '未生成'}\n"
-            f"{report_line}"
+            + (f"• 地图叠加：{state['overlay_meta']['count']} 个图斑已上图"
+               f"（红=新增 / 蓝=消失，点击可查面积）\n" if (state.get("overlay_meta") or {}).get("count") else "")
+            + f"{report_line}"
             f"\n执行链路：\n" + "\n".join(f"  • {x}" for x in log)
         )
     elif res.get("change_ratio") is not None:

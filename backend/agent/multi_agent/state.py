@@ -27,6 +27,7 @@ class MultiAgentState(TypedDict, total=False):
     cog_b: NotRequired[str]                        # 较晚 COG 文件名
     cogs_listed: NotRequired[list[str]]            # 候选 COG 列表（供审计）
     region_label: NotRequired[str]                 # 区域中文名（thematic-index-change：报告标题用）
+    overlay_meta: NotRequired[dict]                # 地图叠加元数据（map-result-linkage：path/count/legend/bbox/basemap）
 
     # ---- Analysis Agent 产出 ----
     analysis_result: NotRequired[dict]             # {method, change_ratio, change_px, valid_px, ...}

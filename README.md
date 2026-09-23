@@ -255,7 +255,7 @@
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 性能优化（基准先行 + 三层） | `scripts/bench.py` + `scripts/tile_cache.py` + 推理层/传输层优化（OpenSpec 变更 2026-09-10-perf-optimization） | ✅ |
-| W2 | 跨域泛化实战检验 + 文档开源准备 | `scripts/thematic_change.py` + `satellite_download.py` 区域化（OpenSpec 变更 2026-09-10-thematic-index-change） | 🚧（实战检验 ✅，文档/开源 ⏭） |
+| W2 | 跨域泛化实战检验 + 结果-地图联动 + 文档开源准备 | `scripts/thematic_change.py` + `satellite_download.py` 区域化 + overlay 通用协议（OpenSpec 2026-09-10-thematic-index-change / 2026-09-23-map-result-linkage） | 🚧（实战检验+联动 ✅，文档/开源 ⏭） |
 | W3 | 技术博客 2-3 篇 | （学习计划） | ⏭ |
 | W4 | 项目展示视频 + 求职准备 | （学习计划） | ⏭ |
 
@@ -277,7 +277,17 @@
 > ⑤ **实测结果**：新增 10.16 km² / 消失 11.60 km² / **净变化 -1.44 km²**（变化占比 7.40%，像元 20m）；目视检查：中部偏东红色连片发展走廊空间可信；蓝色"消失"沿道路线状分布=阴影/BRDF 伪变化特征
 > ⑥ **e2e 双场景**：`--zhengzhou` 专题场景 **10/10**（NL→planner 路由 index_change→report 事件→标题/面积行/边界声明断言）+ 深圳湾回归 **7/7**；selftest 全绿（thematic 21 + report 17 + text_to_map 14 + symbology 8 + cartography 10）
 > ⚠ **W2 诚实红旗**：① 指数命中≠土地真值（裸土 NDBI 同样偏高，NDVI 联合判定缓解不根除）→ 报告措辞"疑似建筑用地" ② 双向翻动大（消失 11.6 km² 沿道路线状=伪变化信号）+ 右上薄云未掩净——净变化方向（-1.44 km²）可信度低于新增/消失总量 ③ bbox（304 km²）≈ 高新区行政区（99 km²）的 3 倍，含周边城乡接合带 ④ SWIR 20m 重采样非真 10m ⑤ green/water 专题只注册未实测 ⑥ 净变化占比与 change_ratio 口径差异（gain+loss vs net）已在指标表分行呈现
-> 快速验证：`.venv/bin/python scripts/thematic_change.py --selftest`（21 断言零网络）；全链路 `.venv/bin/python scripts/e2e_test.py --zhengzhou`
+> 快速验证：`.venv/bin/python scripts/thematic_change.py --selftest`（29 断言零网络）；全链路 `.venv/bin/python scripts/e2e_test.py --zhengzhou`
+
+> **第12月 W2+ 关键数据（分析结果-地图通用联动，OpenSpec 2026-09-23-map-result-linkage）**：
+> ① **overlay 通用协议**：SSE `overlay` 事件 = `{url, fit_bounds, legend[], render_hint, basemap}`——语义（色/标签/限定词）后端给、前端只做通用渲染（W4 意图分层空间版）；可服务变化/分割/水质分级等一切"栅格 mask → 图斑"场景，本次只实现 fill 渲染器（第三次重复才抽象纪律）
+> ② **图斑管线（spike 实测定参）**：最小图斑过滤（scipy.label+bincount）→ rasterio.features.shapes 多边形化 → simplify(5e-5°) → 属性注入。郑州实测：多边形化 0.37s/23,608 区块零压力，但 **93% 变化面积来自 <3px 碎斑**（伪变化噪声）→ min_patch_px=5（≥1968m²，THEMES per-theme；water=1 小水塘语义）滤后 1903 图斑 / 1.2MB GeoJSON（gzip ~300KB）
+> ③ **双口径**：主数字 = 过滤后（analysis/报告/地图三者同源），原始总量保留披露 + 碎片占比档位进定性闸门。郑州修正：新增 10.16→3.91 / 消失 11.60→4.57 / 净 -1.44→-0.66 km²
+> ④ **一致性闭环（e2e 亮点断言）**：overlay 全部图斑 area_m2 总和 == 报告"新增/消失面积"行（±0.01）——同一 mask 两个出口，数字闸门的地图侧闭环
+> ⑤ **底图区域联动**：basemap 用被分析的期 B 影像（无需反查 preset），前端 removeSource/addSource 重建 raster（Mapbox 不可原地改 URL）+ fitBounds + 图例 DOM；status 事件清层（W4 ids 生命周期复用）
+> ⑥ **验证**：e2e 郑州 **17/17**（overlay 协议/面积一致性/basemap/负例）+ 深圳湾回归 **7/7**；selftest 全绿（thematic 29 + report 22 + text_to_map 14 + symbology 8 + cartography 10）
+> ⚠ **诚实红旗**：① min_patch_px=5 经验参数无地面真值标定 ② 双口径使档位词语义漂移（-0.66 km² 旧档位"轻微"）③ simplify 容差纬/经向精度差 19%（34.8°N）④ 大区域体积需重评估（本次 1.2MB 可接受）⑤ e2e 排查发现：**残留旧服务占 8010 端口会让 Popen 的 uvicorn 静默 bind 失败**（stderr=DEVNULL），测试全打到旧服务——已加为环境坑
+> 快速验证：起双服务后聊天框发「对比郑州高新区 2023 和 2025 的建筑用地变化」→ 地图自动切郑州影像 + 红蓝图斑叠加 + 点击查面积；e2e `.venv/bin/python scripts/e2e_test.py --zhengzhou`
 
 ## 项目结构
 

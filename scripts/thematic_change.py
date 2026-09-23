@@ -19,6 +19,14 @@
 诚实边界（design D8）：指数命中 ≠ 土地利用真值——裸土 NDBI 同样偏高，
 builtup 用 NDVI<NDBI 联合判定缓解但不根除；报告措辞用"疑似"。
 
+地图叠加（2026-09-23-map-result-linkage，方案 B 矢量叠加）：
+- min_patch_px（THEMES per-theme）最小图斑过滤：spike 实测 93% 变化面积来自 <3px
+  碎斑（伪变化噪声）——过滤后口径为主数字（analysis/报告/地图三者同源，
+  popup 面积与报告可对账），原始口径保留披露（raw_* 字段）
+- build_overlay：过滤后 mask → 多边形化 → simplify → 自描述 GeoJSON
+  （属性 kind/area_m2/theme/period；图例语义由后端给，前端零领域硬编码）
+- ⚠ min_patch_px 是领域知识必须 per-theme 配置：水域 1-2px 即真实图斑（water=1）
+
 用法：
   .venv/bin/python scripts/thematic_change.py --selftest            # 零网络自测
   .venv/bin/python scripts/thematic_change.py --probe COG.tif       # 指数直方图/分位数（阈值标定）
@@ -64,6 +72,8 @@ THEMES: dict[str, dict] = {
         "assist": {"index": "ndvi", "op": "lt_main"},  # 且 NDVI < NDBI：排农田/裸土（红旗①的工程缓解）
         "exclude": [],                                  # 可扩展：["water"] 待 water 注册实测后启用
         "color": "#5F5E5A",                             # 城市灰（对齐 W2 SEMANTIC）
+        "min_patch_px": 5,                              # 最小图斑 ≥5px≈1968m²（spike 标定：一栋中型建筑起步；
+                                                        #  93% 碎斑面积被滤除，见 design D2/D3）
     },
     "green": {
         "label": "绿化用地",
@@ -72,6 +82,7 @@ THEMES: dict[str, dict] = {
         "assist": None,
         "exclude": ["builtup", "water"],               # 城市树冠 NDVI 也高，先扣建筑/水体
         "color": "#3B6D11",
+        "min_patch_px": 5,                              # 与 builtup 同（连片植被语义）
     },
     "water": {
         "label": "水域",
@@ -80,6 +91,7 @@ THEMES: dict[str, dict] = {
         "assist": None,
         "exclude": [],
         "color": "#185FA5",
+        "min_patch_px": 1,                              # ⚠ 小水塘 1-2px 即真实水域——禁止沿用 builtup 阈值
     },
 }
 
@@ -151,11 +163,112 @@ def _band_names(ds) -> list[str]:
     return V2_BANDS[: ds.count]
 
 
+# 简化容差（度）：≈5.5m < 像元 20m/3，保小图斑；simplify 后面积保持 selftest 断言 ≥98%
+SIMPLIFY_TOL_DEG = 5e-5
+
+
+def min_size_filter(mask: np.ndarray, min_px: int) -> tuple[np.ndarray, int]:
+    """最小图斑过滤：保留 ≥min_px 像元的 4-连通区块（与 rasterio.features.shapes 同连通性）。
+
+    返回 (过滤后 mask, 保留像元数)。碎斑是伪变化主体（郑州实测 93% 面积来自 <3px），
+    过滤是分析步骤而非视觉美化——双口径主数字由此产生。
+    """
+    from scipy.ndimage import label
+    if not mask.any():
+        return mask, 0
+    lab, _ = label(mask)                     # 默认 4-连通
+    sizes = np.bincount(lab.ravel())
+    sizes[0] = 0
+    keep = sizes >= max(min_px, 1)
+    return keep[lab], int(keep.sum())
+
+
+def build_overlay(gain_f: np.ndarray, loss_f: np.ndarray, transform, px_m2: float,
+                  theme_key: str, period: str) -> dict:
+    """过滤后 gain/loss mask → 自描述 GeoJSON FeatureCollection（overlay 协议数据端）。
+
+    面积用像元计数 × px_m2（不用几何面积）——与 index_change/报告同口径，
+    前端 popup 数字与报告可对账（数字闸门的地图侧闭环）。
+    """
+    from rasterio.features import shapes as _shapes
+    from shapely.geometry import mapping, shape
+    features = []
+    for mask, kind in ((gain_f, "gain"), (loss_f, "loss")):
+        if not mask.any():
+            continue
+        from scipy.ndimage import label
+        lab, n = label(mask)
+        sizes = np.bincount(lab.ravel())
+        for i in range(1, n + 1):
+            sub = lab == i
+            geom_raw, _ = next(_shapes(sub.astype(np.uint8), mask=sub, transform=transform))
+            geom = shape(geom_raw).simplify(SIMPLIFY_TOL_DEG, preserve_topology=True)
+            if geom.is_empty:
+                continue
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "kind": kind,
+                    "area_m2": round(int(sizes[i]) * px_m2, 1),
+                    "theme": theme_key,
+                    "theme_label": THEMES[theme_key]["label"],
+                    "period": period,
+                },
+                "geometry": mapping(geom),
+            })
+    return {"type": "FeatureCollection", "features": features}
+
+
 def index_change(cog_a: str | Path, cog_b: str | Path, theme_key: str) -> dict:
     """两期 COG 专题差分：新增/消失/净变化（像元数 + km²）。
 
     输出字段与 spectral_diff_change 同构（change_ratio/valid_pct），
     cartography / report 零适配成本。
+    """
+    d = _diff_masks(cog_a, cog_b, theme_key)
+    bounds, shape = d["bounds"], d["shape"]
+    gain_f, loss_f = d["gain_f"], d["loss_f"]
+    gain_px, loss_px = int(gain_f.sum()), int(loss_f.sum())
+    raw_gain_px, raw_loss_px = d["raw_gain_px"], d["raw_loss_px"]
+    theme = THEMES[theme_key]
+    min_px = d["min_px"]
+    keep_ratio = round((gain_px + loss_px) / max(raw_gain_px + raw_loss_px, 1), 4)
+    px_km2 = d["px_km2"]
+    n_valid = d["n_valid"]
+    return {
+        "method": "index_change",
+        "theme": theme_key,
+        "bbox": [round(bounds.left, 4), round(bounds.bottom, 4),
+                 round(bounds.right, 4), round(bounds.top, 4)],
+        "theme_label": theme["label"],
+        "threshold": theme["rule"]["threshold"],   # 报告模板兼容字段（主指数阈值）
+        "shape": list(shape),
+        "valid_px": n_valid,
+        "change_px": gain_px + loss_px,            # 主口径 = 滤波后
+        "change_ratio": round((gain_px + loss_px) / max(n_valid, 1), 4),
+        "valid_pct": round(n_valid / (shape[0] * shape[1]), 4),
+        "gain_px": gain_px,
+        "loss_px": loss_px,
+        "gain_km2": round(gain_px * px_km2, 4),
+        "loss_km2": round(loss_px * px_km2, 4),
+        "net_km2": round((gain_px - loss_px) * px_km2, 4),
+        "pixel_area_km2": round(px_km2, 6),
+        # ---- 双口径披露字段 ----
+        "min_patch_px": min_px,
+        "raw_gain_px": raw_gain_px,
+        "raw_loss_px": raw_loss_px,
+        "raw_gain_km2": round(raw_gain_px * px_km2, 4),
+        "raw_loss_km2": round(raw_loss_px * px_km2, 4),
+        "raw_net_km2": round((raw_gain_px - raw_loss_px) * px_km2, 4),
+        "patch_keep_ratio": keep_ratio,            # 保留面积占比；1-keep_ratio = 碎斑占比
+    }
+
+
+def _diff_masks(cog_a: str | Path, cog_b: str | Path, theme_key: str) -> dict:
+    """读两期 + classify + 差分 + min_patch_px 过滤 → mask 与统计原料。
+
+    index_change（统计）与 cartography 的 build_overlay（上图）共用——
+    masks 只在本函数内存活、不进 LangGraph state（D5：state 不放大对象）。
     """
     if theme_key not in THEMES:
         raise ValueError(f"未知专题 {theme_key!r}，可选：{sorted(THEMES)}")
@@ -167,6 +280,7 @@ def index_change(cog_a: str | Path, cog_b: str | Path, theme_key: str) -> dict:
         bands_a = da.read().astype(np.float32) / 10000.0
         names_a = _band_names(da)
         bounds, shape = da.bounds, (da.height, da.width)
+        transform = da.transform
     with rasterio.open(pb) as db_:
         bands_b = db_.read().astype(np.float32) / 10000.0
         names_b = _band_names(db_)
@@ -181,32 +295,30 @@ def index_change(cog_a: str | Path, cog_b: str | Path, theme_key: str) -> dict:
 
     mask_a = classify(bands_a, names_a, theme_key) & usable
     mask_b = classify(bands_b, names_b, theme_key) & usable
-    gain = mask_b & ~mask_a          # 新增：期 B 命中、期 A 未命中
-    loss = mask_a & ~mask_b          # 消失
+    gain_raw = mask_b & ~mask_a      # 新增（原始口径）
+    loss_raw = mask_a & ~mask_b      # 消失（原始口径）
 
-    n_valid = int(usable.sum())
-    px_km2 = _pixel_area_km2(bounds, shape[0], shape[1])
-    gain_px, loss_px = int(gain.sum()), int(loss.sum())
-    theme = THEMES[theme_key]
+    min_px = int(THEMES[theme_key]["min_patch_px"])
+    gain_f, _ = min_size_filter(gain_raw, min_px)
+    loss_f, _ = min_size_filter(loss_raw, min_px)
     return {
-        "method": "index_change",
-        "theme": theme_key,
-        "bbox": [round(bounds.left, 4), round(bounds.bottom, 4),
-                 round(bounds.right, 4), round(bounds.top, 4)],
-        "theme_label": theme["label"],
-        "threshold": theme["rule"]["threshold"],   # 报告模板兼容字段（主指数阈值）
-        "shape": list(shape),
-        "valid_px": n_valid,
-        "change_px": gain_px + loss_px,
-        "change_ratio": round((gain_px + loss_px) / max(n_valid, 1), 4),
-        "valid_pct": round(n_valid / (shape[0] * shape[1]), 4),
-        "gain_px": gain_px,
-        "loss_px": loss_px,
-        "gain_km2": round(gain_px * px_km2, 4),
-        "loss_km2": round(loss_px * px_km2, 4),
-        "net_km2": round((gain_px - loss_px) * px_km2, 4),
-        "pixel_area_km2": round(px_km2, 6),
+        "gain_f": gain_f, "loss_f": loss_f,
+        "raw_gain_px": int(gain_raw.sum()), "raw_loss_px": int(loss_raw.sum()),
+        "min_px": min_px, "n_valid": int(usable.sum()),
+        "shape": shape, "bounds": bounds, "transform": transform,
+        "px_km2": _pixel_area_km2(bounds, shape[0], shape[1]),
+        "period": f"{_date_of(pa)} → {_date_of(pb)}",
     }
+
+
+def _date_of(p: Path) -> str:
+    """从文件名抓 8 位日期（zhengzhou_real_20250627.tif → 2025-06-27）；无则原名。"""
+    import re as _re
+    m = _re.search(r"(\d{8})", p.name)
+    if not m:
+        return p.name
+    s = m.group(1)
+    return f"{s[:4]}-{s[4:6]}-{s[6:]}"
 
 
 # ===========================================================================
@@ -274,29 +386,55 @@ def selftest() -> int:
         check(f"[{key}] exclude 引用存在", all(e in THEMES for e in th["exclude"]))
     check("exclude 无环（专题图是 DAG）", _no_cycle())
 
-    # 2. index_change 合成 GT：新增建筑恰好 2400 px
+    # 2. index_change 合成 GT：2400 px 大块（≥5px，过滤后保留）+ 4px 碎斑（被滤除）
     bands_b, names, bands_a = _synthetic_scene()
-    # 写成临时 COG 走真实文件路径（覆盖 descriptions 缺省回退逻辑）
+    bands_b[:, 5:7, 5:7] = np.array([0.12, 0.14, 0.16, 0.14, 0.24, 0.22])[:, None, None]   # 2x2=4px 孤立碎斑
     import tempfile
+    overlay_fc = None
     with tempfile.TemporaryDirectory() as td:
         fa, fb = Path(td) / "a.tif", Path(td) / "b.tif"
         _write_tmp_cog(fa, bands_a, names)
         _write_tmp_cog(fb, bands_b, names)
         res = index_change(fa, fb, "builtup")
-    check("GT 新增像元 = 2400", res["gain_px"] == 2400, f"gain={res['gain_px']}")
-    check("GT 消失像元 = 0", res["loss_px"] == 0, f"loss={res['loss_px']}")
+        # overlay 管线（与 index_change 同一 _diff_masks 通路）
+        d = _diff_masks(fa, fb, "builtup")
+        overlay_fc = build_overlay(d["gain_f"], d["loss_f"], d["transform"],
+                                   d["px_km2"] * 1e6, "builtup", d["period"])
+    check("GT 主口径新增 = 2400（大块保留）", res["gain_px"] == 2400, f"gain={res['gain_px']}")
+    check("GT 原始口径新增 = 2404（碎斑 4px 被滤除）", res["raw_gain_px"] == 2404,
+          f"raw={res['raw_gain_px']}")
+    check("GT 消失 = 0（双口径一致）", res["loss_px"] == 0 and res["raw_loss_px"] == 0)
+    check("patch_keep_ratio ≈ 2400/2404（round4 容差）",
+          abs(res["patch_keep_ratio"] - 2400 / 2404) < 5e-4, str(res["patch_keep_ratio"]))
     check("change_ratio 同构在 (0,1)", 0 < res["change_ratio"] < 1, str(res["change_ratio"]))
     check("net_km2 > 0（净新增）", res["net_km2"] > 0, f"{res['net_km2']} km²")
     check("theme_label 注入（报告用）", res["theme_label"] == "建筑用地")
-    check("面积公式自洽（gain_px × 像元面积）",
+    check("面积公式自洽（滤波后 gain_px × 像元面积）",
           abs(res["gain_px"] * res["pixel_area_km2"] - res["gain_km2"]) < 5e-4)
 
-    # 3. water 专题：左下角水体 20x30=600 px 命中
+    # 2b. overlay FC：图斑属性/面积与主口径对账（数字闸门地图侧闭环）
+    feats = overlay_fc["features"]
+    kinds = {f["properties"]["kind"] for f in feats}
+    check("overlay 仅 gain 图斑（loss=0 不产出）", kinds == {"gain"}, str(kinds))
+    gain_area = sum(f["properties"]["area_m2"] for f in feats if f["properties"]["kind"] == "gain")
+    expect = res["gain_px"] * res["pixel_area_km2"] * 1e6
+    check("overlay 面积总和 == 主口径 km²（±0.1%）", abs(gain_area - expect) / expect < 1e-3,
+          f"{gain_area:.0f} vs {expect:.0f} m²")
+    check("overlay 属性自描述（theme_label/period）",
+          all(f["properties"]["theme_label"] == "建筑用地" and "→" in f["properties"]["period"]
+              for f in feats))
+    check("simplify 后几何有效", all(shape_geo for f in feats
+          for shape_geo in [__import__("shapely.geometry", fromlist=["shape"]).shape(f["geometry"]).is_valid]))
+
+    # 3. water 专题：min_patch_px=1（per-theme 差异断言）+ 左下角水体两期稳定
+    check("water min_patch_px=1（小水塘语义，禁沿用 builtup 阈值）",
+          THEMES["water"]["min_patch_px"] == 1 and THEMES["builtup"]["min_patch_px"] == 5)
     res_w = None
+    bands_b2 = bands_b.copy()
     with tempfile.TemporaryDirectory() as td:
         fa, fb = Path(td) / "a.tif", Path(td) / "b.tif"
         _write_tmp_cog(fa, bands_a, names)
-        _write_tmp_cog(fb, bands_b, names)
+        _write_tmp_cog(fb, bands_b2, names)
         res_w = index_change(fa, fb, "water")
     check("water 专题两期稳定（gain=loss=0）", res_w["gain_px"] == 0 and res_w["loss_px"] == 0,
           f"gain={res_w['gain_px']} loss={res_w['loss_px']}")
@@ -368,6 +506,8 @@ def main() -> int:
     print(json.dumps(res, ensure_ascii=False, indent=2))
     print(f"\n{res['theme_label']}：新增 {res['gain_km2']} km² / 消失 {res['loss_km2']} km²"
           f" / 净变化 {res['net_km2']:+} km²（变化占比 {res['change_ratio']:.2%}）")
+    print(f"  图斑过滤 ≥{res['min_patch_px']}px：保留面积占比 {res['patch_keep_ratio']:.1%}"
+          f"（原始：新增 {res['raw_gain_km2']} / 消失 {res['raw_loss_km2']} km²）")
     return 0
 
 

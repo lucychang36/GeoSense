@@ -178,6 +178,9 @@ async def _stream(query: str):
                                 yield _sse("style", data["map_style"])
                             # 第11月 W1 报告生成：report_tool 结果 → 新事件类型 report
                             # URL 型载荷（前端可直接下载），不经 result 的 [:200] 摘要路径
+                            # map-result-linkage：overlay 通用协议载荷 → 前端上图
+                            if isinstance(data, dict) and data.get("overlay"):
+                                yield _sse("overlay", data["overlay"])
                             if isinstance(data, dict) and data.get("report_path"):
                                 from pathlib import Path as _P
                                 fname = _P(data["report_path"]).name
@@ -315,6 +318,23 @@ def download_report(name: str):
     if not f.is_file():
         return JSONResponse({"error": "文件不存在"}, status_code=404)
     return FileResponse(f)
+
+
+@app.get("/api/overlays/{name}")
+def download_overlay(name: str):
+    """map-result-linkage D4：分析结果叠加层 GeoJSON 下载。
+
+    安全边界同 download_report：剥目录防 ../、后缀白名单、is_file() 显式检查。
+    """
+    from fastapi.responses import FileResponse, JSONResponse
+    overlays_dir = PROJECT_ROOT / "data" / "output" / "overlays"
+    safe = Path(name).name
+    if not safe or safe != name or Path(safe).suffix.lower() != ".geojson":
+        return JSONResponse({"error": "非法文件名"}, status_code=400)
+    f = overlays_dir / safe
+    if not f.is_file():
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    return FileResponse(f, media_type="application/geo+json")
 
 
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

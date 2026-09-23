@@ -57,6 +57,18 @@ def main() -> int:
     results: list[bool] = []
 
     # ---- 起服务（子进程；WORKBUDDY 沙箱内须 env -u PYTHONPATH，脚本外运行无此问题）----
+    # 端口占用预检（2026-09-23 实录）：残留旧服务占 PORT 会让 Popen 的 uvicorn 静默
+    # bind 失败（stderr=DEVNULL），wait_server 探到旧服务 → 断言全打到旧代码（假绿/假红）
+    import socket
+    _probe = socket.socket()
+    try:
+        _probe.bind(("127.0.0.1", PORT))
+    except OSError:
+        print(f"[e2e] ❌ 端口 {PORT} 已被占用——先停掉残留服务（lsof -i :{PORT}）再跑，"
+              f"否则测试会打到旧进程而非本次起的服务")
+        return 1
+    finally:
+        _probe.close()
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     print(f"[e2e] 起服务 uvicorn :{PORT} …")
     proc = subprocess.Popen(
@@ -126,6 +138,47 @@ def main() -> int:
                                  "新增面积" in md_text and "净变化面积" in md_text))
             results.append(check("专题边界声明（疑似 建筑用地）",
                                  "疑似 建筑用地" in md_text))
+
+            # ---- map-result-linkage：overlay 事件 + 面积一致性 + basemap 联动 ----
+            overlays = events.get("overlay", [])
+            results.append(check("overlay 事件到达（通用协议 url/fit_bounds/legend/render_hint）",
+                                 bool(overlays) and all(k in overlays[0] for k in
+                                     ("url", "fit_bounds", "legend", "render_hint")),
+                                 json.dumps(overlays[0], ensure_ascii=False)[:140] if overlays else "无事件"))
+            if overlays:
+                ov = overlays[0]
+                n_feat = 0
+                try:
+                    fc = json.loads(urllib.request.urlopen(f"{API}{ov['url']}", timeout=15).read().decode())
+                    n_feat = len(fc["features"])
+                    g = sum(f["properties"]["area_m2"] for f in fc["features"]
+                            if f["properties"]["kind"] == "gain") / 1e6
+                    l = sum(f["properties"]["area_m2"] for f in fc["features"]
+                            if f["properties"]["kind"] == "loss") / 1e6
+                    import re as _re
+                    mg = _re.search(r"\| 新增面积 \| ([\d.]+) km²", md_text)
+                    ml = _re.search(r"\| 消失面积 \| ([\d.]+) km²", md_text)
+                    ok_area = bool(mg and ml) and abs(g - float(mg.group(1))) < 0.01 \
+                        and abs(l - float(ml.group(1))) < 0.01
+                    results.append(check(f"overlay 面积总和 == 报告主数字"
+                                         f"（新增 {g:.2f} / 消失 {l:.2f} km²，{n_feat} 图斑）", ok_area))
+                except Exception as exc:  # noqa: BLE001
+                    results.append(check("overlay 下载与面积对账", False, str(exc)))
+                results.append(check("overlay 图斑规模合理", 0 < n_feat < 20000, f"{n_feat}"))
+                results.append(check("basemap 联动（期 B 郑州影像）",
+                                     "zhengzhou" in (ov.get("basemap") or {}).get("tile_path", "")))
+                results.append(check("图例含疑似限定词",
+                                     all("疑似" in lg.get("label", "") for lg in ov.get("legend", []))))
+                results.append(check("md 图斑过滤声明在场", "图斑过滤" in md_text))
+                # 净化负例：overlays 路由同样拒穿越
+                try:
+                    urllib.request.urlopen(f"{API}/api/overlays/..%2F..%2FREADME.md", timeout=10)
+                    evil2 = False
+                except urllib.error.HTTPError as e:
+                    evil2 = e.code in (400, 404)
+                except Exception:
+                    evil2 = False
+                results.append(check("overlays 路径净化负例（../ 穿越被拒）", evil2))
 
         # 净化负例：越界路径不得 200
         try:

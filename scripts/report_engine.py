@@ -65,6 +65,9 @@ QUAL_BANDS: list[tuple[float, str]] = [(0.02, "轻微"), (0.08, "中等"), (floa
 # 专题净变化面积档位（km²，index_change 方法专用；同 D1 代码化思想）
 AREA_BANDS: list[tuple[float, str]] = [(0.5, "轻微"), (2.0, "中等"), (float("inf"), "显著")]
 
+# 碎斑占比档位（map-result-linkage D3：1 - patch_keep_ratio，伪变化质量信号）
+NOISE_BANDS: list[tuple[float, str]] = [(0.5, "低"), (0.8, "中"), (float("inf"), "高")]
+
 
 def qualitative_projection(analysis_result: dict) -> dict:
     """analysis_result → 定性档位。返回值不含任何原始数值，作为 LLM 叙事的唯一输入。
@@ -83,6 +86,9 @@ def qualitative_projection(analysis_result: dict) -> dict:
         net = float(analysis_result["net_km2"])
         qual["direction"] = "增加" if net >= 0 else "减少"
         qual["area"] = next(label for hi, label in AREA_BANDS if abs(net) < hi)
+        if "patch_keep_ratio" in analysis_result:
+            noise = 1.0 - float(analysis_result["patch_keep_ratio"])
+            qual["noise"] = next(label for hi, label in NOISE_BANDS if noise < hi)
     return qual
 
 
@@ -92,6 +98,7 @@ def build_narrative_prompt(qual: dict, period: str, region: str) -> str:
     selftest 会断言本函数输出不含 analysis_result 的原始数字（数字闸门）。
     """
     area_line = f"净变化面积：{qual['area']}\n" if qual.get("area") else ""
+    noise_line = f"结果可靠性：小图斑噪声影响{qual['noise']}\n" if qual.get("noise") else ""
     return (
         "你是遥感分析报告的撰写者。请根据以下定性结论写一段 2-3 句的中文解读，"
         "面向非遥感专业的读者，说明变化可能的原因类别（如潮位/季节/人类活动），"
@@ -99,6 +106,7 @@ def build_narrative_prompt(qual: dict, period: str, region: str) -> str:
         f"区域：{region}\n监测期：{period}\n"
         f"变化幅度：{qual['magnitude']}（{qual['direction']}趋势）\n"
         f"{area_line}"
+        f"{noise_line}"
         f"有效观测覆盖：{qual['coverage']}\n"
         "注意：不要编造任何具体数值、面积或百分比；不要使用 markdown。"
     )
@@ -228,9 +236,15 @@ def collect(state: dict) -> dict:
     if res.get("method") == "index_change":
         metrics.update({
             "theme_label": theme_label,
-            "gain_km2": res.get("gain_km2", 0.0),
+            "gain_km2": res.get("gain_km2", 0.0),      # 主口径 = 滤波后（与地图 overlay 同源）
             "loss_km2": res.get("loss_km2", 0.0),
             "net_km2": res.get("net_km2", 0.0),
+            # 双口径披露（map-result-linkage D3）：原始总量 + 过滤参数
+            "raw_gain_km2": res.get("raw_gain_km2", 0.0),
+            "raw_loss_km2": res.get("raw_loss_km2", 0.0),
+            "raw_net_km2": res.get("raw_net_km2", 0.0),
+            "min_patch_px": res.get("min_patch_px", 0),
+            "patch_keep_pct": round(res.get("patch_keep_ratio", 1.0) * 100, 1),
         })
     return {
         "report_id": f"report_{time.strftime('%Y%m%d_%H%M%S')}",
@@ -399,12 +413,15 @@ def selftest() -> int:
             "valid_pct": 0.8111, "gain_px": 15200, "loss_px": 0,
             "gain_km2": 2.41, "loss_km2": 0.0, "net_km2": 2.41,
             "pixel_area_km2": 1.586e-4,
+            "min_patch_px": 5, "raw_gain_km2": 9.83, "raw_loss_km2": 0.0,
+            "raw_net_km2": 9.83, "patch_keep_ratio": 0.245,
         },
         "map_path": "",
     }
     qual3 = qualitative_projection(themed_state["analysis_result"])
-    check("专题档位：direction=增加 + area=显著",
-          qual3["direction"] == "增加" and qual3.get("area") == "显著", str(qual3))
+    check("专题档位：direction=增加 + area=显著 + noise=中",
+          qual3["direction"] == "增加" and qual3.get("area") == "显著"
+          and qual3.get("noise") == "中", str(qual3))
     prompt3 = build_narrative_prompt(qual3, "2023-06-15 → 2025-06-18", "郑州高新区")
     leaked3 = [tok for tok in ("2.41", "0.1685", "15200", "90200") if tok in prompt3]
     check("专题闸门：面积只有档位词，原始数字不进 prompt", not leaked3, f"泄漏={leaked3}")
@@ -416,6 +433,11 @@ def selftest() -> int:
     check("专题边界声明在场（疑似建筑用地）", "疑似 建筑用地" in md3)
     html3 = Path(out3["html_path"]).read_text(encoding="utf-8")
     check("html 同步专题面积行", "净变化面积" in html3)
+    check("md 原始口径行（含碎斑标注 9.83）", "原始总量" in md3 and "9.83" in md3)
+    check("md 图斑过滤声明（≥5 px）", "图斑过滤" in md3 and "≥5" in md3)
+    leaked4 = [tok for tok in ("9.83", "24.5") if tok in prompt3]
+    check("闸门不泄漏原始口径数字", not leaked4, f"泄漏={leaked4}")
+    check("prompt 碎片档位词在场（噪声影响中）", "噪声影响中" in prompt3)
 
     # 6. 向后兼容：旧 spectral_diff state 的标题与历史版本一致（回落深圳湾/水域）
     out4_title = collect(_synthetic_state())["title"]

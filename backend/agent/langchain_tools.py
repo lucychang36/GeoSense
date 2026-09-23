@@ -184,13 +184,25 @@ def report_tool(query: str) -> str:
                 "change_ratio": None, "report_path": None,
             }, ensure_ascii=False)
         res = final.get("analysis_result") or {}
-        return json.dumps({
+        out = {
             "title": final.get("report_title", "GeoSense 分析报告"),
             "change_ratio": res.get("change_ratio"),
             "change_px": res.get("change_px"),
             "report_path": final.get("report_path", ""),
             "narrative_skipped": final.get("narrative_skipped", False),
-        }, ensure_ascii=False)
+        }
+        # 地图叠加（map-result-linkage D5）：URL 型载荷（通用协议 D1），经 overlay 事件上图
+        ov = final.get("overlay_meta") or {}
+        if ov.get("path"):
+            from pathlib import Path as _P
+            out["overlay"] = {
+                "url": f"/api/overlays/{_P(ov['path']).name}",
+                "fit_bounds": ov.get("bbox") or res.get("bbox"),
+                "legend": ov.get("legend", []),
+                "render_hint": "fill",
+                "basemap": ov.get("basemap"),
+            }
+        return json.dumps(out, ensure_ascii=False)
     except Exception as e:                               # noqa: BLE001 —— 错误转文本不炸 ReAct
         return f"[工具错误] {type(e).__name__}: {e}。报告依赖 data/cogs/ 下的两期带日期 COG。"
 

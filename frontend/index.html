@@ -187,6 +187,21 @@
         layout: { 'text-field': ['get', 'name'], 'text-size': 16, 'text-anchor': 'center' },
         paint: { 'text-color': '#f1c40f', 'text-halo-color': '#000000', 'text-halo-width': 1.5 } });
 
+      // overlay 图斑交互（map-result-linkage）：layer 由 overlay 事件动态添加，
+      // 事件委托在此一次性注册（重复注册会累积回调）
+      map.on('click', 'overlay-fill', (e) => {
+        const f = e.features && e.features[0];
+        if (!f) return;
+        const pr = f.properties || {};
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`<b>${pr.theme_label || ''} ${pr.kind === 'gain' ? '新增' : '消失'}（疑似）</b>` +
+            `<br>面积：${(pr.area_m2 / 1e6).toFixed(2)} km²<br>时相：${pr.period || ''}`)
+          .addTo(map);
+      });
+      map.on('mouseenter', 'overlay-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', 'overlay-fill', () => { map.getCanvas().style.cursor = ''; });
+
       map.addSource('query-points', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({ id: 'query-points-circle', type: 'circle', source: 'query-points',
         paint: {
@@ -259,7 +274,8 @@
     createApp({
       data() {
         return { input: '', messages: [], steps: [], answers: [], busy: false,
-                 t2mLayerIds: [], t2mSourceIds: [], reports: [] };
+                 t2mLayerIds: [], t2mSourceIds: [], reports: [],
+                 overlayLayerIds: [], overlaySourceIds: [] };
       },
       methods: {
         short(args) {
@@ -312,6 +328,10 @@
           if (ev.event === 'status') {
             // 新一轮提问开始：清掉上一轮的区边界高亮（district 事件随后会重新绘制）
             if (map.getSource('district')) map.getSource('district').setData(EMPTY_FC);
+            this.clearOverlay();   // map-result-linkage D7：清上一轮叠加层与图例
+          } else if (ev.event === 'overlay') {
+            // 分析结果叠加（通用协议：url/fit_bounds/legend/render_hint/basemap）
+            this.applyOverlay(ev.data);
           } else if (ev.event === 'district' && ev.data.geojson) {
             this.drawDistrict(ev.data.geojson, ev.data.name);
           } else if (ev.event === 'tool') {
@@ -354,6 +374,58 @@
           const bb = geojsonBounds(geojson);
           if (bb) map.fitBounds(bb, { padding: 80 });
           console.info(`高亮区边界：${name}`);
+        },
+        clearOverlay() {
+          // map-result-linkage D7：图层生命周期同 W4 t2m ids 管理模式
+          (this.overlayLayerIds || []).forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+          (this.overlaySourceIds || []).forEach(id => { if (map.getSource(id)) map.removeSource(id); });
+          this.overlayLayerIds = [];
+          this.overlaySourceIds = [];
+          const lg = document.getElementById('gs-overlay-legend');
+          if (lg) lg.remove();
+        },
+        async applyOverlay(p) {
+          // 通用协议 D1：{url, fit_bounds, legend[], render_hint, basemap}
+          // 语义全由后端给（legend 色/标签），前端只做通用渲染（render_hint=fill 本次实现）
+          this.clearOverlay();
+          try {
+            const fc = await fetch(p.url).then(r => r.json());
+            const kindMatch = ['match', ['get', 'kind']];
+            (p.legend || []).forEach(l => kindMatch.push(l.key, l.color));
+            kindMatch.push('#8b98a5');   // 未知 kind 兜底色
+            map.addSource('overlay', { type: 'geojson', data: fc });
+            map.addLayer({ id: 'overlay-fill', type: 'fill', source: 'overlay',
+              paint: { 'fill-color': kindMatch, 'fill-opacity': 0.45 } });
+            map.addLayer({ id: 'overlay-line', type: 'line', source: 'overlay',
+              paint: { 'line-color': kindMatch, 'line-width': 1.2 } });
+            this.overlayLayerIds = ['overlay-fill', 'overlay-line'];
+            this.overlaySourceIds = ['overlay'];
+            // 图例 DOM（后端 legend 渲染，含"疑似"限定词）
+            const lg = document.createElement('div');
+            lg.id = 'gs-overlay-legend';
+            lg.style.cssText = 'position:absolute;left:12px;bottom:36px;z-index:10;' +
+              'background:rgba(10,22,34,.88);border:1px solid #2a6f97;border-radius:8px;' +
+              'padding:8px 12px;font-size:12px;color:#dce8f2;pointer-events:none;';
+            lg.innerHTML = '<div style="font-weight:500;margin-bottom:4px;">分析结果叠加</div>' +
+              (p.legend || []).map(l =>
+                `<div style="display:flex;align-items:center;gap:6px;margin:2px 0;">` +
+                `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;` +
+                `background:${l.color};"></span>${l.label}</div>`).join('');
+            document.getElementById('map').appendChild(lg);
+            // 底图区域联动（D6）：raster source 不可原地改 URL → 移除重建
+            if (p.basemap && p.basemap.tile_path) {
+              const url = `http://127.0.0.1:8001/tiles/{z}/{x}/{y}.png?path=` +
+                encodeURIComponent(p.basemap.tile_path);
+              if (map.getLayer('cog-layer')) map.removeLayer('cog-layer');
+              if (map.getSource('cog')) map.removeSource('cog');
+              map.addSource('cog', { type: 'raster', tiles: [url], tileSize: 256,
+                bounds: p.basemap.bounds, minzoom: 0, maxzoom: 16 });
+              map.addLayer({ id: 'cog-layer', type: 'raster', source: 'cog',
+                paint: { 'raster-opacity': 0.75 } });
+            }
+            if (p.fit_bounds) map.fitBounds(p.fit_bounds, { padding: 40 });
+            console.info(`overlay：${(fc.features || []).length} 个图斑已上图`);
+          } catch (err) { console.warn('overlay 上图失败：', err); }
         },
         applyStyle(payload) {
           // W4 Text-to-Map：先清上一批 t2m 图层/源（图层生命周期由前端记录 ids 管理），

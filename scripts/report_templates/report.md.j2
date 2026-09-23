@@ -28,6 +28,10 @@
 | 新增面积 | {{ metrics.gain_km2 }} km² |
 | 消失面积 | {{ metrics.loss_km2 }} km² |
 | 净变化面积 | {{ metrics.net_km2 }} km² |
+{% if metrics.raw_net_km2 is defined %}
+| 原始总量（含 <{{ metrics.min_patch_px }}px 碎斑） | 新增 {{ metrics.raw_gain_km2 }} / 消失 {{ metrics.raw_loss_km2 }} / 净 {{ metrics.raw_net_km2 }} km² |
+| 保留面积占比 | {{ metrics.patch_keep_pct }}%（其余为小图斑噪声，已过滤） |
+{% endif %}
 {% endif %}
 
 ## 图表
@@ -46,6 +50,7 @@
 {% if metrics.method == "index_change" %}
 - 检测方法：光谱指数专题判定（{{ metrics.theme_label }}）：主指数阈值 {{ metrics.threshold }}，联合条件与排除规则见 backend 专题注册表
 - 变化定义：两期专题掩膜差分（新增 = 期 B 命中且期 A 未命中；消失反之）；云污染与无效观测已剔除
+- 图斑过滤：保留 ≥{{ metrics.min_patch_px }} 像元的连通区块以抑制伪变化（保留面积占比 {{ metrics.patch_keep_pct }}%），主数字与地图叠加层同源
 - 边界声明：指数命中 ≠ 土地利用真值（裸土 NDBI 同样偏高，联合判定缓解不根除），结果为"疑似 {{ metrics.theme_label }}"
 {% else %}
 - 检测方法：{{ metrics.method }}，差异阈值 {{ metrics.threshold }}
