@@ -1,10 +1,11 @@
 """第5月 W1 交付物：stac_catalog.py —— 为 COG 影像创建 STAC 目录
+（2026-09-23 region-data-inventory 变更泛化：region 自动分 collection，去硬编码）
 
 核心概念：STAC（SpatioTemporal Asset Catalog，时空资产目录）
 - 遥感数据"没有 STAC 前"：一堆 tif 文件躺在磁盘，外人不知道有什么、
   覆盖哪、何时拍的、怎么用。检索只能靠人肉翻文件名。
 - "有了 STAC 后"：每个场景变成一份标准 JSON（Item），组织成 Collection，
-  任何人/程序都能用统一协议问"2020 年云量 < 10% 覆盖深圳湾的影像有哪些"。
+  任何人/程序都能用统一协议问"2025 年云量 < 10% 覆盖郑州的影像有哪些"。
 
 核心概念：三层结构（学习计划第5月 W1 的核心）
   Catalog（根）→ Collection（数据集）→ Item（单景影像）
@@ -15,20 +16,26 @@
   - Catalog：最外层容器，组织多个 Collection
 - 与数据分离：STAC 只写元数据 JSON，不复制/移动影像本身 —— 资产用相对路径引用。
 
-本脚本：读 data/cogs/manifest.json（第4月 W3 产出的影像清单）→ 生成
-data/stac/（catalog.json + collection.json + items/），并用 pystac 校验。
+⚠ 本脚本的定位（region-data-inventory D2）：STAC 是 manifest.json 的
+  「标准化导出视图」，**manifest 是唯一真相**——新影像下载即入 manifest，
+  STAC 需重跑本脚本同步；消费方（data_inventory）直读 manifest 而非本目录，
+  避免 stale（金水区案例的实证：郑州两景只在 manifest，STAC 漂移）。
+
+本脚本：读 data/cogs/manifest.json → 按 region 字段自动分组生成
+data/stac/（catalog.json + 每个 region 一个 collection + items/），pystac 校验。
+region 未登记 REGION_META 时自动生成元数据（开放-封闭：新区域加数据即生效）。
 """
 from __future__ import annotations
 
 import json
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 from pystac import (Asset, Catalog, CatalogType, Collection, Extent, Item,
                     MediaType, SpatialExtent, Summaries, TemporalExtent)
@@ -38,15 +45,22 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "cogs" / "manifest.json"
 OUT_DIR = ROOT / "data" / "stac"
 
-# 数据集级元数据
-COLLECTION_ID = "sentinel2-szbay"
-COLLECTION_TITLE = "Sentinel-2 深圳湾影像（2019-2025）"
-COLLECTION_DESCRIPTION = (
-    "深圳湾 Sentinel-2 场景库：5 景合成影像（2019-2023 每年 6 月）+ "
-    "1 景真实 L2A（2025-07-27）+ 1 景多时相镶嵌。波段 B2/B3/B4/B8，"
-    "由 GeoSense 第4月卫星仓库构建，以 COG 格式存储。"
-)
 LICENSE = "proprietary"  # 合成数据为本项目生成；真实场景来自 Sentinel-2（CC-BY 4.0）
+
+
+def legacy_region(scene: dict) -> str:
+    """region 归一：老条目无 region 字段 → 回落 szbay（提案红旗 R2，inventory 同口径标注）。"""
+    return scene.get("region") or "szbay"
+
+
+def collection_meta(region: str, scenes: list[dict]) -> dict:
+    """collection 元数据：REGION_META 注册表给显示文案；未注册自动生成（D1 开放语义）。"""
+    from scripts.data_inventory import REGION_META
+    meta = REGION_META.get(region, {})
+    dates = sorted({s["date"] for s in scenes})
+    label = meta.get("label", region)
+    desc = meta.get("desc") or f"{label} Sentinel-2 场景库（{dates[0]} ~ {dates[-1]}，{len(scenes)} 景）"
+    return {"label": label, "title": f"Sentinel-2 {label}影像", "description": desc}
 
 
 def bbox_to_geometry(bbox: list[float]) -> dict:
@@ -73,7 +87,7 @@ def parse_dt(date_str: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
-def build_scene_item(scene: dict) -> Item:
+def build_scene_item(scene: dict, collection_id: str) -> Item:
     """把一个场景清单变成 STAC Item（单景影像的元数据卡片）。"""
     item = Item(
         id=scene["id"],
@@ -87,7 +101,7 @@ def build_scene_item(scene: dict) -> Item:
             "cloud_cover": scene.get("cloud", 0.0),
             "turbidity": scene.get("turbidity"),
         },
-        collection=COLLECTION_ID,
+        collection=collection_id,
     )
     # 资产：影像本身（role=data）+ 预览图（role=overview）
     item.add_asset(
@@ -104,25 +118,31 @@ def build_scene_item(scene: dict) -> Item:
     return item
 
 
-def build_collection(scenes: list[dict]) -> Collection:
-    """创建 Collection：声明时空范围 + 波段/云量摘要。"""
-    bboxes = [s["bbox"] for s in scenes]
+def build_collection(region: str, scenes: list[dict]) -> Collection:
+    """创建 Collection：声明时空范围 + 波段/云量摘要（bands 取该 region 实际波段的并集）。"""
+    meta = collection_meta(region, scenes)
+    # STAC spatial extent 要求 bbox 数组去重后为 1 个或 ≥3 个（同 bbox 多景会触发重复数组校验失败）
+    uniq_bboxes = []
+    for b in (s["bbox"] for s in scenes):
+        if b not in uniq_bboxes:
+            uniq_bboxes.append(b)
     dates = sorted(parse_dt(s["date"]) for s in scenes)
     clouds = [s.get("cloud", 0.0) for s in scenes]
+    bands = sorted({b for s in scenes for b in s.get("bands", [])})
 
     extent = Extent(
-        spatial=SpatialExtent(bboxes),
+        spatial=SpatialExtent(uniq_bboxes),
         temporal=TemporalExtent([[dates[0], dates[-1]]]),
     )
     collection = Collection(
-        id=COLLECTION_ID,
-        title=COLLECTION_TITLE,
-        description=COLLECTION_DESCRIPTION,
+        id=f"sentinel2-{region}",
+        title=meta["title"],
+        description=meta["description"],
         license=LICENSE,
         extent=extent,
         summaries=Summaries({
             "cloud_cover": {"minimum": min(clouds), "maximum": max(clouds)},
-            "bands": ["B2", "B3", "B4", "B8"],
+            "bands": bands,
         }),
     )
     return collection
@@ -132,50 +152,58 @@ def main() -> None:
     scenes = json.loads(MANIFEST.read_text(encoding="utf-8"))
     console.print(f"[dim]影像清单：{len(scenes)} 景[/]")
 
+    # 0. 按 region 分组（legacy 无 region → szbay；开放语义：任意 region 名都成 collection）
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for s in scenes:
+        groups[legacy_region(s)].append(s)
+    console.print(f"[dim]区域分组：{ {k: len(v) for k, v in sorted(groups.items())} }[/]")
+
     # 1. 根 Catalog
     catalog = Catalog(
-        id="geosense-sz-catalog",
-        title="GeoSense 深圳湾遥感数据目录",
-        description="深圳湾 Sentinel-2 场景库的 STAC 目录（第5月 W1）",
+        id="geosense-catalog",
+        title="GeoSense 遥感数据目录",
+        description="GeoSense Sentinel-2 场景库的 STAC 目录（按 region 自动分组，manifest 唯一真相的导出视图）",
     )
 
-    # 2. Collection（同一数据源的所有场景）
-    collection = build_collection(scenes)
+    # 2~3. 每个 region 一个 Collection + 其下 Items
+    n_items = 0
+    for region in sorted(groups):
+        region_scenes = groups[region]
+        collection = build_collection(region, region_scenes)
+        items = [build_scene_item(s, f"sentinel2-{region}") for s in region_scenes]
+        for it in items:
+            collection.add_item(it)
+        catalog.add_child(collection)
+        n_items += len(items)
 
-    # 3. 每景一个 Item，挂到 Collection
-    items = [build_scene_item(s) for s in scenes]
-    for it in items:
-        collection.add_item(it)
-    catalog.add_child(collection)
-
-    # 4. 落盘（SELF_CONTAINED：catalog.json + collection.json + items/*.json）
+    # 4. 落盘（SELF_CONTAINED：catalog.json + <collection>/collection.json + items/*.json）
+    # 重建前清旧目录（旧版单 collection 结构残留会混入）
+    import shutil
+    if OUT_DIR.exists():
+        shutil.rmtree(OUT_DIR)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     catalog.normalize_and_save(str(OUT_DIR), catalog_type=CatalogType.SELF_CONTAINED)
-    console.print(f"[green]STAC 目录已写入：{OUT_DIR}[/]")
+    console.print(f"[green]STAC 目录已写入：{OUT_DIR}（{len(groups)} collections / {n_items} items）[/]")
 
     # 5. 重新打开并校验（pystac 官方校验器）
     reopened = Catalog.from_file(str(OUT_DIR / "catalog.json"))
     console.print("[dim]pystac 校验：[/]", end="")
-    result = reopened.validate_all()
+    reopened.validate_all()
     console.print("[green]通过 ✓[/]")
 
     # 6. 目录树概览
-    table = Table(title="STAC 目录树")
-    table.add_column("层级", width=12)
-    table.add_column("ID")
-    table.add_column("要素", style="dim")
-    table.add_row("Catalog", catalog.id, "1 个 Collection")
-    table.add_row("Collection", collection.id, f"{len(items)} 个 Item · 时空范围已声明")
-    for it in items:
-        roles = "+".join(sorted({a.roles[0] for a in it.assets.values()}))
-        table.add_row("Item", it.id, f"assets({roles}) · cloud={it.properties.get('cloud_cover')}%")
+    table = Table(title="STAC 目录树（region 自动分组）")
+    table.add_column("Collection")
+    table.add_column("Items", justify="right")
+    table.add_column("波段")
+    for region in sorted(groups):
+        cols = sorted({b for s in groups[region] for b in s.get("bands", [])})
+        table.add_row(f"sentinel2-{region}", str(len(groups[region])), ",".join(cols))
     console.print(table)
 
-    # 7. 示例检索：模拟"2020-2021 年 + 云量<5%"的 STAC 查询
-    console.rule("[bold cyan]示例检索：2020~2021 年且云量 < 5%")
-    hits = [it for it in items
-            if 2020 <= it.datetime.year <= 2021 and it.properties["cloud_cover"] < 5]
-    console.print(f"命中 {len(hits)} 景：[green]{[it.id for it in hits]}[/]")
+    # 7. manifest 一致性自检：item 总数 == manifest 条目数（防重建漏景）
+    assert n_items == len(scenes), f"STAC items {n_items} != manifest {len(scenes)}"
+    console.print(f"[green]manifest 一致性 ✓（{n_items}/{len(scenes)}）[/]")
 
 
 if __name__ == "__main__":

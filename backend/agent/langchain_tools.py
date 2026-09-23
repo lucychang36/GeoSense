@@ -207,6 +207,31 @@ def report_tool(query: str) -> str:
         return f"[工具错误] {type(e).__name__}: {e}。报告依赖 data/cogs/ 下的两期带日期 COG。"
 
 
+# ---- 第12月 W2 region-data-inventory：区域数据清单（空间求交，开放语义） ----
+# 为什么函数内 import：inventory 依赖 data/admin 缓存与 shapely，lazy import 保持构建轻量；
+# manifest 是唯一真相（D2），本工具是 agent 看见"我手里有哪些区域数据"的唯一窗口。
+
+@tool
+def data_inventory_tool(region: str = "", bbox: str = "") -> str:
+    """查询某区域有哪些可用遥感影像数据（区域数据清单）。任意地名（金水区/杭州/任意城市）
+    或任意 bbox（"west,south,east,north"，支持全球）都可查，返回：
+    coverage（full/partial/none）、各期影像的日期/云量/波段，以及无数据时的最近可用区域推荐。
+    当用户问「XX区/XX市有没有数据」「对比 XX 的影像变化」但不确定数据可用性时，先调用它再下结论；
+    查不到数据时必须按 recommendation 诚实告知并推荐替代区域，禁止编造影像或数字。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _root = str(_Path(__file__).resolve().parents[2])
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from scripts.data_inventory import inventory_query
+        result = inventory_query(region, bbox=bbox or None)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:                               # noqa: BLE001 —— 错误转文本不炸 ReAct
+        return (f"[工具错误] {type(e).__name__}: {e}。"
+                f"可改用 bbox 参数直给（如 \"113.5,34.7,113.7,34.9\"）。")
+
+
 # LangGraph 使用的工具列表（W1 的 3 个原子工具 + W2 的 7 个领域工具 + SQL 工具）
 GIS_TOOLS = [calc_distance_tool, create_buffer_tool, transform_coord_tool]
 SPATIAL_TOOLS = [
@@ -221,5 +246,6 @@ SPATIAL_TOOLS = [
     temporal_change_tool,
     text_to_map_tool,
     report_tool,
+    data_inventory_tool,
 ]
 

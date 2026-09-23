@@ -255,7 +255,7 @@
 | 周 | 主题 | 交付物 | 状态 |
 |----|------|--------|------|
 | W1 | 性能优化（基准先行 + 三层） | `scripts/bench.py` + `scripts/tile_cache.py` + 推理层/传输层优化（OpenSpec 变更 2026-09-10-perf-optimization） | ✅ |
-| W2 | 跨域泛化实战检验 + 结果-地图联动 + 文档开源准备 | `scripts/thematic_change.py` + `satellite_download.py` 区域化 + overlay 通用协议（OpenSpec 2026-09-10-thematic-index-change / 2026-09-23-map-result-linkage） | 🚧（实战检验+联动 ✅，文档/开源 ⏭） |
+| W2 | 跨域泛化实战检验 + 结果-地图联动 + 区域数据清单 + 文档开源准备 | `scripts/thematic_change.py` + `satellite_download.py` 区域化 + overlay 通用协议 + `scripts/data_inventory.py` 区域清单（OpenSpec 2026-09-10-thematic-index-change / 2026-09-23-map-result-linkage / 2026-09-23-region-data-inventory） | 🚧（实战检验+联动+区域清单 ✅，文档/开源 ⏭） |
 | W3 | 技术博客 2-3 篇 | （学习计划） | ⏭ |
 | W4 | 项目展示视频 + 求职准备 | （学习计划） | ⏭ |
 
@@ -288,6 +288,18 @@
 > ⑥ **验证**：e2e 郑州 **17/17**（overlay 协议/面积一致性/basemap/负例）+ 深圳湾回归 **7/7**；selftest 全绿（thematic 29 + report 22 + text_to_map 14 + symbology 8 + cartography 10）
 > ⚠ **诚实红旗**：① min_patch_px=5 经验参数无地面真值标定 ② 双口径使档位词语义漂移（-0.66 km² 旧档位"轻微"）③ simplify 容差纬/经向精度差 19%（34.8°N）④ 大区域体积需重评估（本次 1.2MB 可接受）⑤ e2e 排查发现：**残留旧服务占 8010 端口会让 Popen 的 uvicorn 静默 bind 失败**（stderr=DEVNULL），测试全打到旧服务——已加为环境坑
 > 快速验证：起双服务后聊天框发「对比郑州高新区 2023 和 2025 的建筑用地变化」→ 地图自动切郑州影像 + 红蓝图斑叠加 + 点击查面积；e2e `.venv/bin/python scripts/e2e_test.py --zhengzhou`
+
+> **第12月 W2++ 关键数据（区域数据清单与智能兜底，OpenSpec 2026-09-23-region-data-inventory）**：
+> ① **起因（金水区实测暴露）**：问「郑州金水区 2015 vs 2025 建筑用地变化」→ agent 诚实拒绝但漏报"郑州高新区有 2023/2025 两期"——根因：影像元数据在 manifest，agent 工具层够不着（spatial_sql 只查 Doris/PostGIS 三张表）
+> ② **region 开放语义（核心设计）**：判定靠**空间求交**（任意地名/bbox 与 manifest 影像 bbox 求交，全国全球零注册）+ REGION_META 注册表只管显示文案——与 THEMES/SEMANTIC/overlay 同构的开放-封闭第三次落地
+> ③ **地名三级回退解析**：admin_boundary 缓存精确/模糊匹配（同名同级歧义→候选消歧，朝阳区北京/长春对实测）→ 内置词表（深圳湾）→ 未解析诚实指引 bbox 直给
+> ④ **region_known 身份判定（apply 修订）**：纯面积阈值无法区分深圳湾自定义框（0.336）与金水区相交（0.337）——数据自属区域 partial 不拒绝（bbox 近似已知红线），非自属区域 partial 警告"仅 X% 覆盖不足以支撑全区口径"+ 最近邻推荐
+> ⑤ **admin_boundary 全国化**：`fetch_admin_boundaries.py`（DataV GeoAtlas）→ 34 省/363 市/**2840 区县**（simplify 0.005°，10.2MB 缓存）→ `seed_postgis --admin-geojson` upsert 入库 3237 条；**直辖市陷阱修复**：京津沪渝的区县在省级 _full 里直接是 district 级，两级路由漏北京朝阳区 → side_catch 顺路收层
+> ⑥ **STAC 泛化重建**：去硬编码按 region 自动分 collection（szbay 8 items 4 波段 + zhengzhou_hightech 2 items 6 波段，pystac 校验过）；**manifest 唯一真相、STAC 为导出视图**（写入 design docstring，杜绝双真相漂移复发）
+> ⑦ **agent 三层接入**：ReAct 工具 `data_inventory_tool`（graph.py 纪律：不确定先探查）+ multi_agent data_node 选型重构（inventory 求交优先 → 关键词回退 → data_gap 诚实缺口，**杭州负例的"静默回落深圳湾"旧路径被堵死**）+ supervisor 缺口话术（数据情况/你可以两段）
+> ⑧ **验证**：e2e `--jinshui` **8/8**（金水区问句 → 诚实说明 2015 无数据 + 推荐高新区 2023/2025 + 无幻觉 km 数字）+ 深圳湾 7/7 + 郑州 17/17；inventory selftest 9/9 + 五套回归全绿
+> ⚠ **诚实红旗**：① 金水区与影像 34% 相交是 bbox 几何事实，行政区精确裁剪仍未做 ② 世界范围靠 bbox 直给（境外地名 geocode 不做）③ DataV 接口偶发 404（省直辖县级市无下级，跳过不影响）④ region_known 靠 REGION_META/别名注册，未注册数据区域遇 partial 会被保守拒绝（宁可错拒不可错答）⑤ STAC 重建需手动重跑（manifest 变更后）
+> 快速验证：`.venv/bin/python scripts/data_inventory.py --selftest`（9 断言）；e2e `.venv/bin/python scripts/e2e_test.py --jinshui`
 
 ## 项目结构
 
@@ -378,6 +390,8 @@ GeoSense/
 │   ├── bench.py             # 第12月 W1：性能基准（瓦片冷/热、推理 fp32/fp16、冷启动、gzip；--save baseline/after）
 │   ├── tile_cache.py        # 第12月 W1：瓦片磁盘 LRU（键含 mtime_ns 防失效；fail-open 降级）
 │   ├── thematic_change.py   # 第12月 W2：光谱指数专题框架（THEMES 注册表 + index_change 引擎；--selftest 21 断言 / --probe 阈值标定）
+│   ├── data_inventory.py    # 第12月 W2：区域数据清单（空间求交开放语义 + 地名三级回退 + region_known 身份判定；--selftest 9 断言）
+│   ├── fetch_admin_boundaries.py  # 第12月 W2：全国省市县边界下载（DataV GeoAtlas → data/admin/ 缓存，直辖市 side_catch）
 ├── stac_api/               # 第5月 W2：STAC API 服务（FastAPI，/collections、/search）
 │   └── main.py             # 轻量 STAC API（读 data/stac，datetime/bbox/limit 过滤）
 ├── frontend/               # 前端（第3月W4）
@@ -576,4 +590,5 @@ uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 - [x] **第10月 W4** Text-to-Map（意图-渲染分层：LLM 枚举 IR + 确定性组装 Style Spec v8；三主题 CLI demo 零回退 + 浏览器实测；OpenSpec 变更 2026-09-07-text-to-map 全流程）
 - [x] **第11月 W1-W4** 报告生成 + 系统集成（数字闸门：LLM 只收定性档位、数字全由 Jinja2 注入；multi_agent 第 5 个 worker + report_tool + SSE report 事件 + 下载路由 + 前端卡片；e2e_test.py 7/7——终极交互「NL→分析→制图→报告」全链路打通）
 - [x] **第12月 W1** 性能优化（基准先行：bench.py 4 项基线 → 瓦片磁盘缓存 136× / inference_mode + warmup / fp16 负收益回退 / gzip×5 + ETag/304；OpenSpec 变更 2026-09-10-perf-optimization）
-- [ ] **第12月 W2-W4** 文档完善 + 开源准备 / 技术博客 / 展示视频 + 求职准备
+- [x] **第12月 W2** 跨域泛化三连（① 专题指数框架 THEMES 注册表 + 郑州高新区建筑用地报告；② 分析结果-地图 overlay 通用联动 + 双口径；③ 区域数据清单 data_inventory + 空间求交开放语义 + admin_boundary 全国 3237 条 + STAC 泛化重建；e2e --jinshui 8/8 + 深圳 7/7 + 郑州 17/17；OpenSpec 三变更全流程）
+- [ ] **第12月 W3-W4** 文档完善 + 开源准备 / 技术博客 / 展示视频 + 求职准备

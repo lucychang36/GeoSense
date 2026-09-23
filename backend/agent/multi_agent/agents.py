@@ -120,14 +120,31 @@ def planner_node(state: dict) -> dict:
 # Data Agent：匹配 COG
 # ===========================================================================
 # 区域关键词 → 文件前缀（thematic-index-change：多区域共存时按用户问题选对数据源）
+# region-data-inventory D7：本表降级为「回退路径」——区域判定以 inventory 空间求交优先，
+# 关键词只兜底歧义/未解析场景（否则每来一个新城市都要加关键词，违背 region 开放语义）
 REGION_KEYWORDS = {"郑州": "zhengzhou", "高新区": "zhengzhou", "深圳湾": "szbay", "深圳": "szbay"}
 REGION_LABELS = {"zhengzhou": "郑州高新区", "szbay": "深圳湾"}
 
 
+def _inventory_lookup(query: str) -> dict | None:
+    """inventory 求交探查（D7）：任意地名 → bbox → manifest 空间求交。
+    失败返回 None（走关键词回退），绝不抛异常打断管道。"""
+    try:
+        from scripts.data_inventory import inventory_query
+        return inventory_query(query)
+    except Exception as exc:  # noqa: BLE001
+        return {"_error": f"{type(exc).__name__}: {exc}"}
+
+
 def data_node(state: dict) -> dict:
-    """从 data/cogs/ 选 cog_a / cog_b。优先用 planner 给的文件名；缺则按区域前缀的
-    真实日期 COG 最早/最晚兜底（要求文件名含 8 位连续数字，剔除合成图如 *_mosaic.tif）。
-    区域由用户问题关键词或 planner 给的文件名推断；无关键词时回落深圳湾（历史行为）。"""
+    """从 data/cogs/ 选 cog_a / cog_b。
+
+    选型顺序（region-data-inventory D7）：
+    1. planner 显式给了有效文件名 → 直接用（历史行为）
+    2. inventory 空间求交（开放语义：任意地名零注册）→ 命中区域取真实日期两景
+    3. REGION_KEYWORDS 关键词回退（inventory 歧义/未解析/不可用时）
+    4. 全部落空 → data_gap（诚实缺口：推荐替代区域，不静默回落深圳湾编造答案）
+    """
     cogs_dir = PROJECT_ROOT / "data" / "cogs"
     available = sorted([p.name for p in cogs_dir.glob("*.tif")]) if cogs_dir.exists() else []
     plan = state.get("plan", {})
@@ -138,26 +155,100 @@ def data_node(state: dict) -> dict:
         m = re.search(r"(\d{8})", name)
         return int(m.group(1)) if m else None
 
-    # 区域推断：问题关键词优先，其次 plan 里 COG 文件名前缀（枚举优先于自由字符串）
-    prefix = next((p for kw, p in REGION_KEYWORDS.items() if kw in query), None)
-    if prefix is None and cog_a:
-        prefix = next((p for p in REGION_LABELS if cog_a.startswith(p + "_")), None)
-    region_label = REGION_LABELS.get(prefix or "", "")
-
-    # 兜底：找含 8 位日期的 {prefix}_real COG（剔除 mosaic/合成图）；无前缀回落 szbay
-    scan = f"{prefix}_real" if prefix else "szbay_real"
-    real_dated = [(n, _date8(n)) for n in available if scan in n]
-    real_dated = [(n, d) for n, d in real_dated if d is not None]
-    if ((not cog_a or cog_a not in available) or (not cog_b or cog_b not in available)) and len(real_dated) >= 2:
-        real_dated.sort(key=lambda x: x[1])
-        cog_a, cog_b = real_dated[0][0], real_dated[-1][0]
-
     log = list(state.get("step_log", []))
-    log.append(f"data → cog_a={cog_a}, cog_b={cog_b}（候选 {len(available)} 个，dated {len(real_dated)}，区域={region_label or '默认深圳湾'}）")
-    out = {"cog_a": cog_a, "cog_b": cog_b, "cogs_listed": available,
-           "current_step": "analysis", "step_log": log}
+    prefix = None
+    region_label = ""
+    gap: dict | None = None
+    note = ""
+
+    # ---- 1. planner 显式文件名优先（历史行为不变）----
+    planner_valid = bool(cog_a in available and cog_b in available and cog_a != cog_b)
+    if not planner_valid:
+        # ---- 2. inventory 空间求交优先（D7）----
+        inv = _inventory_lookup(query)
+        if inv is not None and "_error" not in inv:
+            if inv.get("candidates"):
+                # 红旗 R1：同名歧义（如北京/长春朝阳区）→ 不猜，降级关键词回退
+                log.append(f"data → inventory 地名歧义（{len(inv['candidates'])} 候选），降级关键词回退")
+            elif inv.get("resolved") and inv.get("query_bbox"):
+                # 真实日期影像（文件名含 8 位日期，剔除合成图如 *_mosaic.tif / S2_201906）
+                real = [s for s in inv.get("scenes", [])
+                        if re.search(r"\d{8}", Path(s["path"]).name)]
+                known = bool(inv.get("region_known"))
+                cover = inv.get("coverage")
+                # 选型规则（D4 修订）：数据自属区域（region_known，bbox 近似为已知红线）
+                # 或完整覆盖（full）→ 继续；非自属区域的部分覆盖（如金水区 33%）
+                # 不足以支撑全区口径 → data_gap + 推荐替代，不静默错位分析
+                if real and (known or cover == "full"):
+                    region = sorted({s["region"] for s in real})[0]
+                    rs = sorted([s for s in real if s["region"] == region],
+                                key=lambda s: s["date"])
+                    cog_a, cog_b = Path(rs[0]["path"]).name, Path(rs[-1]["path"]).name
+                    from scripts.data_inventory import REGION_META
+                    region_label = REGION_META.get(region, {}).get("label", region)
+                    # 年份口径注记：请求年份无影像时明说（诚实披露，不静默替换）
+                    avail_years = {s["date"][:4] for s in rs}
+                    missing = sorted({y for y in re.findall(r"20\d{2}", query)
+                                      if y not in avail_years})
+                    if missing:
+                        note = (f"请求年份 {'、'.join(missing)} 无影像，已采用"
+                                f"{region_label}可用两期（{rs[0]['date']} / {rs[-1]['date']}）")
+                    log.append(f"data → inventory 命中 region={region}"
+                               f"（coverage={cover}，{len(rs)} 期真实影像，known={known}）")
+                elif real:
+                    gap = {"region": inv.get("region_name") or query,
+                           "coverage": cover,
+                           "recommendation": inv.get("recommendation")
+                           or "该区域仅部分被现有影像覆盖，不足以支撑全区口径分析"}
+                    log.append(f"data → inventory 部分覆盖（{gap['region']}），置 data_gap")
+                else:
+                    gap = {"region": inv.get("region_name") or query,
+                           "coverage": "none",
+                           "recommendation": inv.get("recommendation")
+                           or "该区域无可用影像数据"}
+                    log.append(f"data → inventory 无可用影像：{gap['region']}")
+            else:
+                log.append("data → inventory 未解析地名，降级关键词回退")
+        elif inv is not None:
+            log.append(f"data → inventory 不可用（{inv['_error'][:60]}），走关键词回退")
+
+        # ---- 3. 关键词回退（D7 降级路径）----
+        if gap is None and not (cog_a in available and cog_b in available and cog_a != cog_b):
+            prefix = next((p for kw, p in REGION_KEYWORDS.items() if kw in query), None)
+            if prefix is None and cog_a:
+                prefix = next((p for p in REGION_LABELS if cog_a.startswith(p + "_")), None)
+            region_label = region_label or REGION_LABELS.get(prefix or "", "")
+            if prefix:
+                scan = f"{prefix}_real"
+                real_dated = [(n, _date8(n)) for n in available if scan in n]
+                real_dated = [(n, d) for n, d in real_dated if d is not None]
+                if len(real_dated) >= 2:
+                    real_dated.sort(key=lambda x: x[1])
+                    cog_a, cog_b = real_dated[0][0], real_dated[-1][0]
+                else:
+                    # 关键词命中但影像不足两期：诚实缺口（不静默塞合成图）
+                    gap = {"region": REGION_LABELS.get(prefix, prefix),
+                           "coverage": "insufficient",
+                           "recommendation": f"{REGION_LABELS.get(prefix, prefix)} 的可用真实影像不足两期，无法时相对比"}
+                    log.append(f"data → 关键词命中 {prefix} 但影像不足，置 data_gap")
+            else:
+                # ---- 4. 全部落空：诚实缺口（不再静默回落深圳湾，杭州负例实证）----
+                gap = {"region": query[:40], "coverage": "unresolved",
+                       "recommendation": "无法从问题中确定区域，且无匹配的影像数据。"
+                                         "系统现有数据区域：深圳湾、郑州高新区（郑州高新区为 2023/2025 两期）。"
+                                         "请指定区域后重试，或将影像放入 data/cogs/。"}
+                log.append("data → 区域未识别（关键词与 inventory 均未命中），置 data_gap")
+
+    out: dict = {"cog_a": cog_a, "cog_b": cog_b, "cogs_listed": available,
+                 "current_step": "analysis", "step_log": log}
+    if gap is not None:
+        out["data_gap"] = gap
     if region_label:
         out["region_label"] = region_label
+    if note:
+        out["data_note"] = note
+    log.append(f"data → cog_a={cog_a or '∅'}, cog_b={cog_b or '∅'}"
+               f"（候选 {len(available)} 个，区域={region_label or gap and gap['region'] or '未定'}）")
     return out
 
 
@@ -170,6 +261,11 @@ def analysis_node(state: dict) -> dict:
     """
     cog_a = state.get("cog_a", "")
     cog_b = state.get("cog_b", "")
+    log = list(state.get("step_log", []))
+    # 数据缺口短路（region-data-inventory D7）：不跑分析、不报 error（留给 supervisor 话术）
+    if state.get("data_gap"):
+        log.append("analysis → 短路（data_gap：区域无可用数据）")
+        return {"current_step": "cartography", "step_log": log}
     if not cog_a or not cog_b:
         return {"analysis_error": "缺少 COG 文件名", "current_step": "cartography"}
     if cog_a == cog_b:
@@ -337,8 +433,9 @@ def report_worker(state: dict) -> dict:
     引擎内部失败也不中断管道：记 step_log，supervisor 照常汇总。
     """
     log = list(state.get("step_log", []))
-    if state.get("analysis_error"):
-        log.append("report → 短路（analysis_error 存在，不生成空报告）")
+    if state.get("analysis_error") or state.get("data_gap"):
+        reason = "analysis_error" if state.get("analysis_error") else "data_gap（区域无可用数据）"
+        log.append(f"report → 短路（{reason} 存在，不生成空报告）")
         return {"current_step": "supervisor", "step_log": log}
     try:
         from scripts.report_engine import generate_report
@@ -361,9 +458,20 @@ def supervisor_node(state: dict) -> dict:
     res = state.get("analysis_result") or {}
     map_path = state.get("map_path", "")
     err = state.get("analysis_error")
+    gap = state.get("data_gap")
+    note = state.get("data_note", "")
+    note_line = f"• ⚠ 年份口径：{note}\n" if note else ""
     log = list(state.get("step_log", []))
 
-    if err:
+    if gap:
+        # 诚实拒绝话术（region-data-inventory D7）：说清缺口 + 主动推荐替代，不编造
+        answer = (
+            f"⚠️ 无法完成该分析：{gap.get('region', '查询区域')}缺少所需影像数据。\n"
+            f"• 数据情况：{gap.get('recommendation', '无可用数据')}\n"
+            f"• 你可以：改用推荐区域的可用两期重新提问；或将该区域两期影像放入 data/cogs/ 后重试。\n"
+            f"\n执行步骤：\n" + "\n".join(f"  • {x}" for x in log)
+        )
+    elif err:
         answer = f"❌ 分析失败：{err}\n\n执行步骤：\n" + "\n".join(f"  • {x}" for x in log)
     elif res.get("method") == "index_change" and res.get("net_km2") is not None:
         report_line = ""
@@ -373,6 +481,7 @@ def supervisor_node(state: dict) -> dict:
                            f"{'（⚠ LLM 叙事降级，仅数据部分）' if state.get('narrative_skipped') else ''}\n")
         answer = (
             f"✅ 专题变化分析完成：{res.get('theme_label', '专题')}（{state.get('cog_a', '?')} vs {state.get('cog_b', '?')}）\n"
+            f"{note_line}"
             f"• 方法：光谱指数专题判定（主指数阈值 {res.get('threshold')}，边界：结果为“疑似{res.get('theme_label', '')}”）\n"
             f"• 新增 {res.get('gain_km2')} km²（{res.get('gain_px', 0):,} px）｜消失 {res.get('loss_km2')} km²（{res.get('loss_px', 0):,} px）\n"
             f"• 净变化：**{res.get('net_km2'):+} km²**（变化占比 {res.get('change_ratio'):.2%}）\n"
@@ -390,6 +499,7 @@ def supervisor_node(state: dict) -> dict:
                            f"{'（⚠ LLM 叙事降级，仅数据部分）' if state.get('narrative_skipped') else ''}\n")
         answer = (
             f"✅ 时相对比完成（{state.get('cog_a', '?')} vs {state.get('cog_b', '?')}）\n"
+            f"{note_line}"
             f"• 方法：{res.get('method', '?')}（阈值 {res.get('threshold', '?')}）\n"
             f"• 变化占比：**{res['change_ratio']:.2%}**（{res.get('change_px', 0):,} / {res.get('valid_px', 0):,} 像素）\n"
             f"• 专题图：{map_path or '未生成'}\n"

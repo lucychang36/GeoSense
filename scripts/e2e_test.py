@@ -29,6 +29,8 @@ API = f"http://127.0.0.1:{PORT}"
 QUERY = "对比深圳湾 2023 和 2025 的水域变化，并生成分析报告"
 # 专题场景（thematic-index-change）：--zhengzhou 切换；断言专题标题/面积行/口径修正
 QUERY_ZZ = "对比郑州高新区 2023 和 2025 的建筑用地变化，并生成分析报告"
+# 数据缺口场景（region-data-inventory）：--jinshui 切换；断言诚实拒绝 + 主动推荐替代
+QUERY_JS = "对比郑州金水区 2015 和 2025 的建筑用地变化"
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
@@ -52,8 +54,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--zhengzhou", action="store_true",
                     help="跑郑州高新区建筑用地专题场景（默认深圳湾回归场景）")
+    ap.add_argument("--jinshui", action="store_true",
+                    help="跑郑州金水区数据缺口场景（region-data-inventory：诚实拒绝+推荐替代）")
     args = ap.parse_args()
-    query = QUERY_ZZ if args.zhengzhou else QUERY
+    query = QUERY_JS if args.jinshui else (QUERY_ZZ if args.zhengzhou else QUERY)
     results: list[bool] = []
 
     # ---- 起服务（子进程；WORKBUDDY 沙箱内须 env -u PYTHONPATH，脚本外运行无此问题）----
@@ -104,6 +108,31 @@ def main() -> int:
                 events.setdefault(ev, []).append(data)
 
         tool_names = [d.get("name") for d in events.get("tool", [])]
+
+        # ---- 数据缺口场景（region-data-inventory D8）：ReAct 路径，无报告产出 ----
+        if args.jinshui:
+            results.append(check("tool 事件含 data_inventory_tool（先探查后下结论）",
+                                 "data_inventory_tool" in tool_names,
+                                 f"tools={tool_names}（{time.time()-t0:.0f}s）"))
+            answer_text = "".join(d.get("delta", "") for d in events.get("answer", []))
+            results.append(check("回答承认查询区域（金水）", "金水" in answer_text,
+                                 answer_text[:80]))
+            results.append(check("回答含替代推荐（郑州高新区）",
+                                 "高新区" in answer_text and "郑州" in answer_text))
+            results.append(check("回答含可用日期（2023 与 2025）",
+                                 "2023" in answer_text and "2025" in answer_text))
+            results.append(check("回答诚实说明缺口（无/不足/覆盖类字样）",
+                                 any(kw in answer_text for kw in ("没有", "无影像", "不足", "覆盖", "缺少")),
+                                 answer_text[:120]))
+            results.append(check("无幻觉面积数字（km 值不出现）",
+                                 not __import__("re").search(r"\d+\.\d+\s*km", answer_text),
+                                 answer_text[:120]))
+            results.append(check("无报告事件（缺口路径不产报告）", not events.get("report")))
+            results.append(check("流正常收尾（done）", bool(events.get("done"))))
+            n_pass = sum(results)
+            print(f"\n=== e2e 汇总: {n_pass}/{len(results)} PASS ===")
+            return 0 if all(results) else 1
+
         results.append(check("tool 事件含 report_tool（LLM 自主路由）",
                              "report_tool" in tool_names,
                              f"tools={tool_names}（{time.time()-t0:.0f}s）"))

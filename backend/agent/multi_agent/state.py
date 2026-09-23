@@ -28,6 +28,8 @@ class MultiAgentState(TypedDict, total=False):
     cogs_listed: NotRequired[list[str]]            # 候选 COG 列表（供审计）
     region_label: NotRequired[str]                 # 区域中文名（thematic-index-change：报告标题用）
     overlay_meta: NotRequired[dict]                # 地图叠加元数据（map-result-linkage：path/count/legend/bbox/basemap）
+    data_gap: NotRequired[dict]                    # 数据缺口（region-data-inventory D7：region/coverage/recommendation → supervisor 拒绝话术）
+    data_note: NotRequired[str]                    # 数据口径注记（如请求年份无影像，已用可用两期）
 
     # ---- Analysis Agent 产出 ----
     analysis_result: NotRequired[dict]             # {method, change_ratio, change_px, valid_px, ...}
