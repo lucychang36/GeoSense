@@ -396,9 +396,13 @@
             map.addSource('overlay', { type: 'geojson', data: fc });
             map.addLayer({ id: 'overlay-fill', type: 'fill', source: 'overlay',
               paint: { 'fill-color': kindMatch, 'fill-opacity': 0.45 } });
+            // 可见性优化（2026-09-24）：在卫星影像底图上，同色细线极易被"吃掉"。
+            // 三层结构：半透明填充 → 白色晕圈描边（与底图拉开对比）→ 语义色实线。
+            map.addLayer({ id: 'overlay-casing', type: 'line', source: 'overlay',
+              paint: { 'line-color': '#FFFFFF', 'line-width': 3.5, 'line-opacity': 0.85 } });
             map.addLayer({ id: 'overlay-line', type: 'line', source: 'overlay',
-              paint: { 'line-color': kindMatch, 'line-width': 1.2 } });
-            this.overlayLayerIds = ['overlay-fill', 'overlay-line'];
+              paint: { 'line-color': kindMatch, 'line-width': 1.8 } });
+            this.overlayLayerIds = ['overlay-fill', 'overlay-casing', 'overlay-line'];
             this.overlaySourceIds = ['overlay'];
             // 图例 DOM（后端 legend 渲染，含"疑似"限定词）
             const lg = document.createElement('div');

@@ -105,15 +105,55 @@ def spatial_sql_tool(question: str) -> str:
 # 工具首次被调用时才触发模型加载 —— 且与 /api/model 服务共享同进程 MPS 单例（零网络，不打 HTTP 环路）。
 
 @tool
-def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> str:
+def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass",
+                         theme: str = "") -> str:
     """对 data/cogs/ 下两景同区域遥感影像（文件名）做变化检测，返回变化占比与类别转换统计。
     当用户问"两期/两个年份的影像对比变化""深圳湾 2023 和 2025 相比变了多少"时使用。
     例：cog_a=szbay_real_20230708.tif, cog_b=szbay_real_20250727.tif；
-    method="postclass"（U-Net 分类后比较，默认，推荐）或 "spectral"（光谱差分 baseline）。"""
+    method="postclass"（U-Net 分类后比较，默认，推荐）或 "spectral"（光谱差分 baseline）。
+    theme（可选）：用户关注某类用地时传 builtup（建筑）/ green（绿化）/ water（水域），
+    会额外生成地图叠加图斑（overlay 字段，红=新增 / 蓝=消失，前端自动上图）。"""
     try:
         # lazy import：保持 Agent 构建轻量；运行时与 model_service 共享 MPS 单例
         from ..model_service.change import change_cog
         r = change_cog(cog_a, cog_b, method=method)
+        # overlay（map-result-linkage 协议第二个消费者，2026-09-24）：theme 给出时
+        # 生成图斑 GeoJSON 落盘并随结果返回 —— main.py 检测到 overlay 字段即发 SSE 上图。
+        # 与 report_tool（multi_agent 管线）共用 _diff_masks/build_overlay 同源通路。
+        overlay = None
+        if theme:
+            try:
+                import time as _time
+                from pathlib import Path as _P
+                from ..model_service.loader import safe_cog_path, COGS_DIR
+                from scripts.thematic_change import THEMES, _diff_masks, build_overlay
+                if theme not in THEMES:
+                    raise ValueError(f"未知专题 {theme!r}，可选：{sorted(THEMES)}")
+                d = _diff_masks(safe_cog_path(cog_a), safe_cog_path(cog_b), theme)
+                overlays_dir = COGS_DIR.parent / "output" / "overlays"
+                overlays_dir.mkdir(parents=True, exist_ok=True)
+                name = f"overlay_{_time.strftime('%Y%m%d_%H%M%S')}_{theme}.geojson"
+                ov_path = overlays_dir / name
+                fc = build_overlay(d["gain_f"], d["loss_f"], d["transform"],
+                                   d["px_km2"] * 1e6, theme, d["period"])
+                ov_path.write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
+                tl = THEMES[theme]["label"]
+                overlay = {
+                    "url": f"/api/overlays/{name}",
+                    "fit_bounds": [d["bounds"].left, d["bounds"].bottom,
+                                   d["bounds"].right, d["bounds"].top],
+                    "legend": [
+                        {"key": "gain", "color": "#E6323C", "label": f"新增{tl}（疑似）"},
+                        {"key": "loss", "color": "#3C78EB", "label": f"消失{tl}（疑似）"},
+                    ],
+                    "render_hint": "fill",
+                    "basemap": {"tile_path": f"data/cogs/{_P(cog_a).name}",
+                                "bounds": [d["bounds"].left, d["bounds"].bottom,
+                                           d["bounds"].right, d["bounds"].top]},
+                }
+            except Exception as ov_exc:                      # noqa: BLE001
+                # 叠加失败不阻塞变化检测主结果（与 cartography_node 同策略）
+                overlay = {"error": f"{type(ov_exc).__name__}: {ov_exc}"}
         # 摘要化返回：只取数值 + 转换矩阵，丢弃 change_cog 里的 base64 PNG（文本 LLM 不可消费）
         # 注意字段顺序：关键数值必须前置 —— main.py 的 SSE result 事件对 summary 做 [:200] 截断，
         # 前置保证前端事件流里能看到核心数字（LLM 拿完整 ToolMessage 不受影响）。
@@ -126,6 +166,7 @@ def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> s
             "cog_b": r["cog_b"],
             "class_names": r["class_names"],     # 类别顺序说明（transition 行列含义）
             "transition": r["transition"],       # 3×3 转换矩阵，仅 postclass 有值；[i][j]=类 i→类 j 像素数
+            "overlay": overlay,                  # theme 给出时非 None；前端上图用
         }, ensure_ascii=False)
     except Exception as e:  # noqa: BLE001 —— 错误转文本不炸 ReAct（2026-09-24：RuntimeError
         # 穿透曾炸穿循环，与 text_to_map_tool 的边界策略对齐；文件名类错误仍给候选兜底
