@@ -82,6 +82,32 @@ def safe_cog_path(rel_or_name: str) -> Path:
     return target
 
 
+# 模型输入波段约定（unet_finetuned.pt 等 2026-09 前权重均按此训练）：
+# 位置 0-3 = B2,B3,B4,B8（蓝/绿/红/近红外）。W2 波段约定 v2 的 COG 是六波段
+# （B2,B3,B4,B8,B11,B12），前 4 个位置语义与旧约定完全一致 → 按位置截取即可兼容新旧，
+# 无需重训模型（SWIR 两个波段只有光谱指数引擎 index_change 用，模型不用）。
+MODEL_BAND_COUNT = 4
+
+
+def select_model_bands(bands: np.ndarray) -> np.ndarray:
+    """把任意波段数的 COG 数组归一化到模型输入约定 (4, H, W)。
+
+    4 波段（旧 COG）原样返回；>4 波段（v2 六波段）截取前 4；
+    <4 波段是数据缺陷，显式报错而不是让 conv 层报 channels 不匹配。
+    """
+    import numpy as np
+
+    if bands.ndim != 3:
+        raise ValueError(f"波段数组应为 (C, H, W)，实际 shape={bands.shape}")
+    c = bands.shape[0]
+    if c < MODEL_BAND_COUNT:
+        raise ValueError(
+            f"COG 只有 {c} 个波段，模型需要 {MODEL_BAND_COUNT}（B2,B3,B4,B8）。"
+            "请检查影像生成流程（satellite_download.py 合成六波段）。"
+        )
+    return bands[:MODEL_BAND_COUNT] if c > MODEL_BAND_COUNT else bands
+
+
 def list_loaded() -> dict:
     """健康检查端点用：列出已加载模型。"""
     return {

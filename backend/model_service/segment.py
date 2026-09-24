@@ -28,9 +28,12 @@ def _png_b64(arr: np.ndarray) -> str:
 
 
 def _load_bands(cog_path: Path) -> np.ndarray:
-    """读 COG → (4, H, W) float32 反射率（与训练输入一致）。"""
+    """读 COG → (4, H, W) float32 反射率（与训练输入一致）。
+
+    六波段 v2 COG 按位置截取前 4（B2,B3,B4,B8），与旧 4 波段 COG 语义一致。"""
+    from .loader import select_model_bands
     with rasterio.open(cog_path) as ds:
-        return ds.read().astype(np.float32) / 10000.0
+        return select_model_bands(ds.read().astype(np.float32) / 10000.0)
 
 
 def segment_cog(cog_path: str, weight: str = "unet_finetuned.pt",

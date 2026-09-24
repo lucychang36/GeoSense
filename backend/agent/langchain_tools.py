@@ -127,15 +127,15 @@ def temporal_change_tool(cog_a: str, cog_b: str, method: str = "postclass") -> s
             "class_names": r["class_names"],     # 类别顺序说明（transition 行列含义）
             "transition": r["transition"],       # 3×3 转换矩阵，仅 postclass 有值；[i][j]=类 i→类 j 像素数
         }, ensure_ascii=False)
-    except (FileNotFoundError, ValueError) as e:
-        # 用户输入类错误 → 转文本不抛异常（抛了会炸 ReAct 循环）；带候选兜底 LLM 编造文件名
+    except Exception as e:  # noqa: BLE001 —— 错误转文本不炸 ReAct（2026-09-24：RuntimeError
+        # 穿透曾炸穿循环，与 text_to_map_tool 的边界策略对齐；文件名类错误仍给候选兜底
         from ..model_service.loader import COGS_DIR
         candidates = sorted(
             p.name for p in COGS_DIR.glob("*.tif")
             if re.search(r"\d{8}", p.name)      # 只列带日期的真实 COG（剔除合成 mosaic）
         )
         hint = "、".join(candidates) if candidates else "（data/cogs/ 下暂无带日期 COG）"
-        return f"[工具错误] {e}。可用带日期的 COG 文件：{hint}"
+        return f"[工具错误] {type(e).__name__}: {e}。可用带日期的 COG 文件：{hint}"
 
 
 # ---- 第10月 W4 Text-to-Map：自然语言 → Mapbox 样式（2026-09-07 OpenSpec 变更） ----

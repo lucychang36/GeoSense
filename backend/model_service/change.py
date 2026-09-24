@@ -38,7 +38,10 @@ def _load(cog_path: str) -> tuple[np.ndarray, Path]:
     p = safe_cog_path(cog_path)
     with rasterio.open(p) as ds:
         bands = ds.read().astype(np.float32) / 10000.0
-    return bands, p
+    # 六波段 v2 COG → 模型/下游函数的位置索引约定 (4,H,W)（fix 2026-09-24：郑州 6 波段
+    # 喂 4 通道 U-Net 报 channels mismatch，下游 pseudo_mask/rgb_preview 全是位置索引）
+    from .loader import select_model_bands
+    return select_model_bands(bands), p
 
 
 def change_cog(cog_a: str, cog_b: str, method: str = "postclass",
